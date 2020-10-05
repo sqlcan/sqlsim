@@ -1,4 +1,4 @@
-# sqlsir
+# SQLSIM
 SQL Server Smart Index Management
 
 SQL Smart Index Management (SQLSIM) was developed as part of graduate studies project to provide another approach to index management than traditionally accepted.
