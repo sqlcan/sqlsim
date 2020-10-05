@@ -1,7 +1,7 @@
 # sqlsir
 SQL Server Smart Index Management
 
-SQL Smart Index Management (SQLSIR) was developed as part of graduate studies project to provide another approach to index management than traditionally accepted.
+SQL Smart Index Management (SQLSIM) was developed as part of graduate studies project to provide another approach to index management than traditionally accepted.
 
 SQLSIR learns how quickly an index will become fragmented and then maintain an index based on the learning.   Minimizing the time needed to be spent on scanning for fragmentation.
 
