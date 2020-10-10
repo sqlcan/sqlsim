@@ -1,0 +1,104 @@
+-- 1.01 Updated all table definitions in this script to required columns, types, etc.
+-- 1.02 Removed the taking the database off-line.  Because taking it off-line does not
+--      remove the .mdf and .ldf. Which causes the problem with create statement
+--      afterwards.
+-- 1.03 Removed NOLOCK hints, as I do not think getting meta data should cause any
+--      conflicts with the system.
+-- 1.04 Added Index Name back into the Data Collection Procedure
+--      [dbo].[upUpdateMasterIndexCatalog].
+-- 1.05 Fixed the bugs in [dbo].[upUpdateMasterIndexCatalog] script; which was
+--      deleting all the indexes.
+-- 1.06 Fixed the bugs in dynamic code identified by dba last time (missing type
+--      and missing and statement)
+-- 1.07 Fixed bug where the list of columns being fetched was not same at start off
+--      the loop and end of the loop for index lookups.
+-- 1.08 Simplified the Create Database Statement; removing growth settings, initial
+--      size, etc.
+-- 1.09 Fixed table definition mistakes in MasterIndexCatalog table.
+-- 1.10 Added a missing comma after i.name in upUpdateMasterIndexCatalog.
+-- 1.11 Removed the object qualification in 2nd delete statement, as the parent object
+--      does not have aliases.
+-- 1.12 Added check for making sure index id is at least 1 or greater.
+-- 1.13 Fixed the date stamps being recorded when operation completes.
+-- 1.14 Fixed bug where an index potentially will be scanned in every maintenance
+--      window if the result of Fragmentation Analysis is NOOP.
+-- 1.15 Changed the index operation logic for indexes that were fragmented
+--      between 10 - 30%; ideally in this range we should reorganize indexes.
+--      However if the Allow Page locks is turned off we cannot, therefore
+--      script was defaulting to rebuild online/offline.  However this is problem
+--      as for indexes with even 11% fragmentation it was triggering rebuild.
+--      In some large systems these indexes are in 100GB+.  Thus not desired operation, thus
+--      if index is identified in this range now; desired operation is NOOP.
+-- 1.16 Modified the MasterIndexCatalog Table, added fields to track the index
+--      usage details, namely Index Singleton Lookups vs Index Range Scans.
+-- 1.17 Created new table to track the last time the index usage stats were collected.
+--      This table will be used in conjunction with the job that will capture all
+--      servers index usage stats every 15 minutes and update the MasterIndexCatalog.
+-- 1.18 Modified the code to maintain which have range scan, all other indexes
+--      will be ignored.  In-addition indexes now will be maintained by
+--      last scanned, last maintained, and largest range scans first.
+-- 1.19 Added functionality to track transaction log file size.  If the transaction
+--      log usage reaches capacity (defined value, defaulted at 80%); it will stop
+--      maintaining all indexes for the database where it has reached capacity.
+-- 1.20 Added notification under NOOP, to report back index size and fragmentation.
+-- 1.21 Adjusted now the MAXDOP value is used.  If the index does not allow page locks
+--      then the index rebuild operation is online however no parallelism is used.
+--      For additional reference, please read blog article ...
+--      http://blogs.msdn.com/b/psssql/archive/2012/09/05/
+--      how-it-works-online-index-rebuild-can-cause-increased-fragmentation.aspx 
+-- 1.22 Fixed minor bugs where table names and column names were miss-spelled.
+-- 1.23 Fixed bug where the table to check tlog space needs to be re-created.
+-- 1.24 Added functionality to handle weekdays in the maintenance windows calculations.
+-- 1.25 Added functionality to skip indexes based on how frequently they become 
+--      fragmented.
+-- 1.26 Fixed the bug with how column types were detected to analyze if online index
+--      operations are possible.
+-- 1.27 Fixed object cleanup check in overall script; where wrong pros were being
+--      dropped after EXSITS check.
+-- 1.28 Added additional details to History Log when an index scan finishes.
+-- 1.29 Fixed bug in upUpdaetIndexUsageStats; where meta data table if it did not
+--      have any rows it would not collect last restart date.  Which would cause
+--      the historical data to wipe and clean up.
+-- 1.30 Updated the code for calculating maintenance windows based on weekdays.
+-- 1.31 Fixed bug with if clause, in upMaintainIndexes; was missing a bracket and
+--      was using the wrong comparatives >= vs => (incorrect).
+-- 1.32 Fixed bug in LOB column check.
+-- 1.33 Fixed the bug in LOB check; the OBJECTPROPERTY function can only be used with
+--      local database and not target database.  Therefore changed it to use 
+--      is_ms_shipped field in sys.tables catalog view instead.
+-- 1.34 Fixed second bug in LOB check; where the database context was not added
+--      when checking for LOB fields, therefore the check was failing.
+-- 1.35 Added functionality to provide reasoning for why NOOP was chosen in the
+--      history table.
+-- 1.36 Adjusted the calculation for MaxSkip count; if the default date was being used
+--      then the MaxSkip count would be set to 30, which is incorrect.  If the
+--      index has never been maintained then max skip count should only adjust by value
+--      of 1 day.
+-- 1.37 If the index was skipped due to maintenance window constraints, the skip count
+--      is reset to Max Skip count to so index does not get skipped next cycle.
+-- 1.38 If index is disabled we do not need to do internal SmartIndex maintenance for
+--      the index therefore needed to add additional checks under NOOP phase.
+-- 1.39 Code added in 1.37 was added in wrong branch of the code, therefore the skip
+--      count was being reset to maxskip count every time. Moved the code to correct
+--      branch.
+-- 1.40 Fixed the MaxSkip count, where if the date was default (1900-01-01) then it
+--      would increment the skip count by 1 day, however only if MaxSkipCount was > 0
+--      which it never be if its not initiated. Therefore check should be >= 0.
+-- 1.41 Fixed the IsDisabled check in noop branch of the code.
+-- 1.42 Updated how index skip counter works. 
+-- 1.43 Updated how the default operation time is calculated.  It defaulted to
+--      1 hour which was too much for small maintenance windows which are only 
+--      30 minute long.
+-- 1.44 Added new mechanism to handle index operation time; if index is failed to
+--      maintain due to previous operation time.  It will continue to 
+--      decrement previous operation time by 5% to allow for index to be maintained
+--      in future maintenance windows.
+-- 1.45 Fixed branch of code to allow for offline index maintenance if reorg is not
+--      possible.
+-- 1.46 Fixing spelling mistakes.
+-- 1.47 Changed how the indexes are picked up for management.
+--      Changed from MIC.LastScanned ASC, MIC.LastManaged ASC, RangeScanCount DESC to
+--      LastManaged, SkipCount, RangeCount.
+-- 1.48 Bug fix.  Added mainteance window constraint check at start of of index
+--      management loop to prevent even an index scan operation from starting
+--      in event script has reached end of mainteance cycle.

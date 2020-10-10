@@ -1,7 +1,6 @@
 /*
    Developed by: Mohit K. Gupta
-   Avaliable at: http://smartindex.codeplex.com
-                 http://sqlcan.wordpress.com
+   Avaliable at: http://www.sqlcan.com
 
  - COPYRIGHT NOTICE -
 
@@ -67,136 +66,37 @@ A "contributor" is any person that distributes its contribution under this licen
 -- Developed by: Mohit K. Gupta
 --               mogupta@microsoft.com
 --
--- Last Updated: February 24, 2015
+-- Last Updated: Oct. 9, 2020
 --
--- Version: 1.48
+-- Version: 2.00
 --
--- 1.01 Updated all table definitions in this script to required columns, types, etc.
--- 1.02 Removed the taking the database off-line.  Because taking it off-line does not
---      remove the .mdf and .ldf. Which causes the problem with create statement
---      afterwards.
--- 1.03 Removed NOLOCK hints, as I do not think getting meta data should cause any
---      conflicts with the system.
--- 1.04 Added Index Name back into the Data Collection Procedure
---      [dbo].[upUpdateMasterIndexCatalog].
--- 1.05 Fixed the bugs in [dbo].[upUpdateMasterIndexCatalog] script; which was
---      deleting all the indexes.
--- 1.06 Fixed the bugs in dynamic code identified by dba last time (missing type
---      and missing and statement)
--- 1.07 Fixed bug where the list of columns being fetched was not same at start off
---      the loop and end of the loop for index lookups.
--- 1.08 Simplified the Create Database Statement; removing growth settings, initial
---      size, etc.
--- 1.09 Fixed table definition mistakes in MasterIndexCatalog table.
--- 1.10 Added a missing comma after i.name in upUpdateMasterIndexCatalog.
--- 1.11 Removed the object qualification in 2nd delete statement, as the parent object
---      does not have aliases.
--- 1.12 Added check for making sure index id is at least 1 or greater.
--- 1.13 Fixed the date stamps being recorded when operation completes.
--- 1.14 Fixed bug where an index potentially will be scanned in every maintenance
---      window if the result of Fragmentation Analysis is NOOP.
--- 1.15 Changed the index operation logic for indexes that were fragmented
---      between 10 - 30%; ideally in this range we should reorganize indexes.
---      However if the Allow Page locks is turned off we cannot, therefore
---      script was defaulting to rebuild online/offline.  However this is problem
---      as for indexes with even 11% fragmentation it was triggering rebuild.
---      In some large systems these indexes are in 100GB+.  Thus not desired operation, thus
---      if index is identified in this range now; desired operation is NOOP.
--- 1.16 Modified the MasterIndexCatalog Table, added fields to track the index
---      usage details, namely Index Singleton Lookups vs Index Range Scans.
--- 1.17 Created new table to track the last time the index usage stats were collected.
---      This table will be used in conjunction with the job that will capture all
---      servers index usage stats every 15 minutes and update the MasterIndexCatalog.
--- 1.18 Modified the code to maintain which have range scan, all other indexes
---      will be ignored.  In-addition indexes now will be maintained by
---      last scanned, last maintained, and largest range scans first.
--- 1.19 Added functionality to track transaction log file size.  If the transaction
---      log usage reaches capacity (defined value, defaulted at 80%); it will stop
---      maintaining all indexes for the database where it has reached capacity.
--- 1.20 Added notification under NOOP, to report back index size and fragmentation.
--- 1.21 Adjusted now the MAXDOP value is used.  If the index does not allow page locks
---      then the index rebuild operation is online however no parallelism is used.
---      For additional reference, please read blog article ...
---      http://blogs.msdn.com/b/psssql/archive/2012/09/05/
---      how-it-works-online-index-rebuild-can-cause-increased-fragmentation.aspx 
--- 1.22 Fixed minor bugs where table names and column names were miss-spelled.
--- 1.23 Fixed bug where the table to check tlog space needs to be re-created.
--- 1.24 Added functionality to handle weekdays in the maintenance windows calculations.
--- 1.25 Added functionality to skip indexes based on how frequently they become 
---      fragmented.
--- 1.26 Fixed the bug with how column types were detected to analyze if online index
---      operations are possible.
--- 1.27 Fixed object cleanup check in overall script; where wrong pros were being
---      dropped after EXSITS check.
--- 1.28 Added additional details to History Log when an index scan finishes.
--- 1.29 Fixed bug in upUpdaetIndexUsageStats; where meta data table if it did not
---      have any rows it would not collect last restart date.  Which would cause
---      the historical data to wipe and clean up.
--- 1.30 Updated the code for calculating maintenance windows based on weekdays.
--- 1.31 Fixed bug with if clause, in upMaintainIndexes; was missing a bracket and
---      was using the wrong comparatives >= vs => (incorrect).
--- 1.32 Fixed bug in LOB column check.
--- 1.33 Fixed the bug in LOB check; the OBJECTPROPERTY function can only be used with
---      local database and not target database.  Therefore changed it to use 
---      is_ms_shipped field in sys.tables catalog view instead.
--- 1.34 Fixed second bug in LOB check; where the database context was not added
---      when checking for LOB fields, therefore the check was failing.
--- 1.35 Added functionality to provide reasoning for why NOOP was chosen in the
---      history table.
--- 1.36 Adjusted the calculation for MaxSkip count; if the default date was being used
---      then the MaxSkip count would be set to 30, which is incorrect.  If the
---      index has never been maintained then max skip count should only adjust by value
---      of 1 day.
--- 1.37 If the index was skipped due to maintenance window constraints, the skip count
---      is reset to Max Skip count to so index does not get skipped next cycle.
--- 1.38 If index is disabled we do not need to do internal SmartIndex maintenance for
---      the index therefore needed to add additional checks under NOOP phase.
--- 1.39 Code added in 1.37 was added in wrong branch of the code, therefore the skip
---      count was being reset to maxskip count every time. Moved the code to correct
---      branch.
--- 1.40 Fixed the MaxSkip count, where if the date was default (1900-01-01) then it
---      would increment the skip count by 1 day, however only if MaxSkipCount was > 0
---      which it never be if its not initiated. Therefore check should be >= 0.
--- 1.41 Fixed the IsDisabled check in noop branch of the code.
--- 1.42 Updated how index skip counter works. 
--- 1.43 Updated how the default operation time is calculated.  It defaulted to
---      1 hour which was too much for small maintenance windows which are only 
---      30 minute long.
--- 1.44 Added new mechanism to handle index operation time; if index is failed to
---      maintain due to previous operation time.  It will continue to 
---      decrement previous operation time by 5% to allow for index to be maintained
---      in future maintenance windows.
--- 1.45 Fixed branch of code to allow for offline index maintenance if reorg is not
---      possible.
--- 1.46 Fixing spelling mistakes.
--- 1.47 Changed how the indexes are picked up for management.
---      Changed from MIC.LastScanned ASC, MIC.LastManaged ASC, RangeScanCount DESC to
---      LastManaged, SkipCount, RangeCount.
--- 1.48 Bug fix.  Added mainteance window constraint check at start of of index
---      management loop to prevent even an index scan operation from starting
---      in event script has reached end of mainteance cycle.
+-- 2.00 Updated for Partitions and SQL 2019.
 --------------------------------------------------------------------------------------
 
 USE [master]
 GO
 
--- If database MSIMD already exists, drop it.
-IF EXISTS (SELECT * FROM sys.databases WHERE name = 'MSIMD')
+-- If database SQLSIM already exists, drop it.
+IF EXISTS (SELECT * FROM sys.databases WHERE name = 'SQLSIM')
 BEGIN
-	DROP DATABASE MSIMD
+	ALTER DATABASE SQLSIM SET OFFLINE WITH ROLLBACK IMMEDIATE
+	ALTER DATABASE SQLSIM SET ONLINE
+	DROP DATABASE SQLSIM
 END
 
 -- Create a new database setting the recovery model to SIMPLE.
-CREATE DATABASE [MSIMD]
+CREATE DATABASE [SQLSIM]
 GO
 
-ALTER DATABASE [MSIMD] SET RECOVERY SIMPLE 
+ALTER DATABASE [SQLSIM] SET RECOVERY SIMPLE 
 GO
 
-USE [MSIMD]
+USE [SQLSIM]
 GO
 
--- Setup up the MSIMD Meta-data tables used to maintain the indexes
+-- Setup up the SQLSIM Meta-data tables used to maintain the indexes
+IF OBJECT_ID('dbo.MaintenanceWindow') IS NOT NULL
+	DROP TABLE dbo.MaintenanceWindow
 
 CREATE TABLE dbo.MaintenanceWindow (
 	MaintenanceWindowID			int							NOT NULL	IDENTITY(1,1) 
@@ -206,26 +106,43 @@ CREATE TABLE dbo.MaintenanceWindow (
 	   CONSTRAINT dfSTNullValue								DEFAULT ('0:00'),
 	MaintenanceWindowEndTime	time						NOT NULL
 	   CONSTRAINT dfETNullValue								DEFAULT ('0:00'),
-    MainteanceWindowWeekdays    varchar(56)                 NOT NULL,
+    MainteanceWindowWeekdays    varchar(255)                NOT NULL
        CONSTRAINT MainteanceWindowWeekdays                  DEFAULT ('None'),
 	[MaintenanceWindowDateModifer]  AS (CASE WHEN [MaintenanceWindowStartTime]>[MaintenanceWindowEndTime] THEN (-1) ELSE (0) END) PERSISTED NOT NULL
 );
 
+CREATE UNIQUE NONCLUSTERED INDEX uqMaintenanceWindowName ON dbo.MaintenanceWindow(MaintenanceWindowName);
+
 INSERT INTO MaintenanceWindow (MaintenanceWindowName,MaintenanceWindowStartTime,MaintenanceWindowEndTime,MainteanceWindowWeekdays)
      VALUES ('No Maintenance','0:00','0:00','None'),
 			('HOT Tables','23:00','1:00','None'),
-			('Maintenance Window #1','1:00','1:45','None'),
-			('Maintenance Window #2','2:30','6:30','None')
+			('Maintenance Window #1','1:00','1:45','None');
+
+IF OBJECT_ID('dbo.DatabaseStatus') IS NOT NULL
+	DROP TABLE dbo.DatabaseStatus
 
 CREATE TABLE dbo.DatabaseStatus (
     DatabaseID				 int				NOT NULL,
     IsLogFileFull            bit                NOT NULL
-)
+);
+
+IF OBJECT_ID('dbo.MetaData') IS NOT NULL
+	DROP TABLE dbo.MetaData
 
 CREATE TABLE dbo.MetaData (
     LastIndexUsageScanDate   datetime           NOT NULL
         CONSTRAINT dfLastIndexUsageScanDate     DEFAULT ('1900-01-01')
-)
+);
+
+IF OBJECT_ID('dbo.DatabasesToSkip') IS NOT NULL
+	DROP TABLE dbo.DatabasesToSkip
+	
+CREATE TABLE dbo.DatabasesToSkip (
+	DatabaseName sysname NOT NULL
+		CONSTRAINT pkDatabasesToSkip_DBName PRIMARY KEY);
+
+IF OBJECT_ID('dbo.MasterIndexCatalog') IS NOT NULL
+	DROP TABLE dbo.MasterIndexCatalog
 
 CREATE TABLE dbo.MasterIndexCatalog (
 	ID						 bigint				NOT NULL	IDENTITY(1,1)
@@ -238,6 +155,7 @@ CREATE TABLE dbo.MasterIndexCatalog (
 	TableName				 nvarchar(255)		NOT NULL,
 	IndexID					 int				NOT NULL,
 	IndexName				 nvarchar(255)		NOT NULL,
+	PartitionNumber			 int				NOT NULL,
 	IndexFillFactor			 tinyint 			NULL
 		CONSTRAINT dfIndexFillFactor			DEFAULT(95),
 	IsDisabled				 bit				NOT NULL
@@ -265,17 +183,14 @@ CREATE TABLE dbo.MasterIndexCatalog (
 		CONSTRAINT fkMaintenanceWindowID_MasterIndexCatalog_MaintenanceWindowID FOREIGN KEY REFERENCES MaintenanceWindow(MaintenanceWindowID),
 	LastScanned				 datetime			NOT NULL
 		CONSTRAINT dfLastScanned				DEFAULT('1900-01-01'),
-	LastScannedTime			 int				NOT NULL
-		CONSTRAINT dfLastScannedTime			DEFAULT(0),
 	LastManaged				 datetime		    NULL
 		CONSTRAINT dfLastManaged				DEFAULT('1900-01-01'),
-	LastRebuildTime			 int				NULL
-		CONSTRAINT dfLastRebuildTime			DEFAULT(0),
-	LastReorgTime			 int				NULL
-		CONSTRAINT dfLastReorgTime				DEFAULT(0),
-    LastEvaluated            datetime           NOT NULL,
+    LastEvaluated            datetime           NOT NULL
         CONSTRAINT dfLastEvaluated              DEFAULT(GetDate())
 )
+
+IF OBJECT_ID('dbo.MaintenanceHistory') IS NOT NULL
+	DROP TABLE dbo.MaintenanceHistory
 
 CREATE TABLE dbo.MaintenanceHistory (
 	HistoryID				bigint					NOT NULL	IDENTITY (1,1)
@@ -297,6 +212,8 @@ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'upUpdateMasterIndexCatalog')
 GO
 
 CREATE PROCEDURE dbo.upUpdateMasterIndexCatalog
+@DefaultMainteanceWindowName VARCHAR(255) = 'No Maintenance',
+@DefaultMainteanceWindowID INT = 1
 AS
 BEGIN
 
@@ -304,17 +221,47 @@ BEGIN
 	DECLARE @DatabaseName	nvarchar(255)
 	DECLARE @SQL			varchar(8000)
 
+	IF (@DefaultMainteanceWindowName <> 'No Maintenance')
+		SELECT @DefaultMainteanceWindowID = MaintenanceWindowID
+		  FROM dbo.MaintenanceWindow
+		 WHERE MaintenanceWindowName = @DefaultMainteanceWindowName
+
+	IF (@DefaultMainteanceWindowID IS NULL)
+		SET @DefaultMainteanceWindowID = 1
+
 	CREATE TABLE #DatabaseToManage
 	(DatabaseID		int,
      DatabaseName	nvarchar(255));
+
+	-- Only select user database databases that are online and writable.
+	--
+	-- Only database that are in DatabasesToManage -- Controlled by DBA Team --
 
 	INSERT INTO #DatabaseToManage
 		 SELECT database_id, name
 	       FROM sys.databases
 	      WHERE database_id > 4
-	        AND state = 0
-	        AND is_read_only = 0
+			AND user_access = 0     -- MULTI_USER
+	        AND state = 0			-- ONLINE
+	        AND is_read_only = 0    -- READ_WRITE
+			AND is_in_standby = 0   -- Log Shipping Standby
+			AND name NOT IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
 
+	-- Remove databses from list that are part of AG but not primary replica.
+	DELETE
+	  FROM #DatabaseToManage
+	 WHERE DatabaseName IN (    SELECT d.name
+                                  FROM sys.databases d
+                            INNER JOIN sys.dm_hadr_availability_replica_states rs ON d.replica_id = rs.replica_id
+                            INNER JOIN sys.availability_groups ag ON rs.group_id = ag.group_id
+                                 WHERE rs.role_desc = 'SECONDARY')
+
+	-- Remove databases that are Mirror partner --
+	DELETE
+	  FROM #DatabaseToManage
+	 WHERE DatabaseName IN (SELECT db_name(database_id) FRom sys.database_mirroring WHERE mirroring_role = 2)
+
+	-- Table used to track current state of tlog space.  Once TLog has reached capacity setting.
     DELETE FROM dbo.DatabaseStatus
     INSERT INTO dbo.DatabaseStatus
     SELECT DatabaseID, 0
@@ -333,34 +280,44 @@ BEGIN
 		WHILE @@FETCH_STATUS = 0
 		BEGIN
 			
-			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, IndexID, IndexName, IndexFillFactor)
-			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, i.index_id, i.name, i.fill_factor
+			-- Update Master Index Catalog with meta-data, new objects identified.
+			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexFillFactor)
+			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor
 						  FROM [' + @DatabaseName + '].sys.schemas s
                           JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
                           JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
+						  JOIN [' + @DatabaseName + '].sys.partitions p on t.object_id = p.object_id
+						                                            AND i.index_id = p.index_id
                          WHERE i.is_hypothetical = 0
 						   AND i.index_id >= 1
+						   AND i.type IN (1,2,3,5,6) -- Only index excluded in HEAP, SPATIAL Indexes, Memory Indexes
+						   AND t.is_ms_shipped = 0
                            AND NOT EXISTS (SELECT *
                                              FROM dbo.MasterIndexCatalog MIC
                                             WHERE MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
                                               AND MIC.SchemaID = s.schema_id
                                               AND MIC.TableID = t.object_id
-                                              AND MIC.IndexID = i.index_id)'
+                                              AND MIC.IndexID = i.index_id
+											  AND MIC.PartitionNumber = p.partition_number)'
 			
 			EXEC(@SQL)
 			
+			-- Update Master Index Catalog with meta-data, remove objects that do not exist any more.
 			SET @SQL = 'DELETE FROM MaintenanceHistory
 			                  WHERE MasterIndexCatalogID
 			                     IN ( SELECT ID
 			                            FROM dbo.MasterIndexCatalog MIC
 			                           WHERE NOT EXISTS (SELECT *
 			                                               FROM [' + @DatabaseName + '].sys.schemas s
-														   JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
-														   JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
+														   JOIN [' + @DatabaseName + '].sys.tables t     ON s.schema_id = t.schema_id
+														   JOIN [' + @DatabaseName + '].sys.indexes i    on t.object_id = i.object_id
+						                                   JOIN [' + @DatabaseName + '].sys.partitions p on t.object_id = p.object_id
+						                                                                                 AND i.index_id = p.index_id
 														  WHERE MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
                                                             AND MIC.SchemaID = s.schema_id
                                                             AND MIC.TableID = t.object_id
-                                                            AND MIC.IndexID = i.index_id)
+                                                            AND MIC.IndexID = i.index_id
+															AND MIC.PartitionNumber = p.partition_number)
 							             AND MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + ')'
                                               
 			
@@ -369,12 +326,15 @@ BEGIN
 			SET @SQL = 'DELETE FROM MasterIndexCatalog
 			                  WHERE NOT EXISTS (SELECT *
 			                                      FROM [' + @DatabaseName + '].sys.schemas s
-							  				      JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
-												  JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
+							  				      JOIN [' + @DatabaseName + '].sys.tables t     ON s.schema_id = t.schema_id
+												  JOIN [' + @DatabaseName + '].sys.indexes i    on t.object_id = i.object_id
+						                          JOIN [' + @DatabaseName + '].sys.partitions p on t.object_id = p.object_id
+						                                                                       AND i.index_id = p.index_id
 											     WHERE DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
                                                    AND SchemaID = s.schema_id
                                                    AND TableID = t.object_id
-                                                   AND IndexID = i.index_id)
+                                                   AND IndexID = i.index_id
+												   AND PartitionNumber = p.partition_number)
 	                            AND DatabaseID = ' + CAST(@DatabaseID AS varchar)
                                               
 			
@@ -418,6 +378,7 @@ BEGIN
           JOIN dbo.MasterIndexCatalog MIC ON IOS.database_id = MIC.DatabaseID
                                          AND IOS.object_id = MIC.TableID
                                          AND IOS.index_id = MIC.IndexID
+										 AND IOS.partition_number = MIC.PartitionNumber
     END
     ELSE
     BEGIN
@@ -431,6 +392,7 @@ BEGIN
           JOIN dbo.MasterIndexCatalog MIC ON IOS.database_id = MIC.DatabaseID
                                          AND IOS.object_id = MIC.TableID
                                          AND IOS.index_id = MIC.IndexID
+										 AND IOS.partition_number = MIC.PartitionNumber
 
     END
 
@@ -452,8 +414,17 @@ IF EXISTS (SELECT * FROM sys.objects WHERE name = 'upMaintainIndexes')
 GO
 
 CREATE PROCEDURE [dbo].[upMaintainIndexes]
+@IgnoreRangeScans BIT = 0,
+@PrintOnlyNoExecute INT = 0,
+@MAXDOPSetting INT = 4,
+@LastOpTimeGap INT = 5,
+@MaxLogSpaceUsageBeforeStop FLOAT = 80,
+@LogNOOPMsgs BIT = 0,
+@DebugMode BIT = 0
 AS
 BEGIN
+
+	SET NOCOUNT ON
 
     -- Start of Stored Procedure
 	DECLARE @MaintenanceWindowName	    varchar(255)
@@ -464,6 +435,7 @@ BEGIN
 	DECLARE @TableID				    bigint
 	DECLARE @TableName				    nvarchar(255)
 	DECLARE @IndexID				    int
+	DECLARE @PartitionNumber			int
 	DECLARE @IndexName				    nvarchar(255)
 	DECLARE @IndexFillFactor		    tinyint 
 	DECLARE @IndexOperation			    varchar(25)
@@ -485,18 +457,17 @@ BEGIN
 	DECLARE @FiveMinuteCheck		    int
 	DECLARE @FFA					    int --Fill Factor Adjustment
     DECLARE @LogSpacePercentage         float
-    DECLARE @MaxLogSpaceUsageBeforeStop float
     DECLARE @ReasonForNOOP				varchar(255)
 	
 	SET NOCOUNT ON
 
-	SET @MAXDOP = 8		             -- Degree of Parallelism to use for Index Rebuilds
+	IF (@DebugMode = 1)
+		PRINT 'Starting Index Mainteance Script on ' + CONVERT(VARCHAR(255),GETDATE(),121)
 
-	SET @FiveMinuteCheck = 5*60*1000 -- When the script is with in 5 minutes of maintenance window; it will not try to run any more
-	                                 --  operations.
+	SET @MAXDOP = @MAXDOPSetting	 -- Degree of Parallelism to use for Index Rebuilds
 
-    SET @MaxLogSpaceUsageBeforeStop = 80.0 -- This value controls when the maintenance script stops executing because the maximum log usage size has been reached.
-                                           -- This value is in percentage.
+	SET @FiveMinuteCheck = @LastOpTimeGap*60*1000 -- When the script is with in 5 minutes of maintenance window; it will not try to run any more
+											      --  operations.
 
     SELECT MaintenanceWindowID,
            MaintenanceWindowName,
@@ -523,8 +494,13 @@ BEGIN
 
 	IF (@MaintenanceWindowName IS NULL)
 	BEGIN
+		IF (@DebugMode = 1)
+			PRINT 'No maintenance window found.  Stopping script on ' + CONVERT(VARCHAR(255),GETDATE(),121)
 		RETURN	
 	END
+
+	IF (@DebugMode = 1)
+		PRINT '... Running maintenance script for ' + @MaintenanceWindowName
 
     -- We need to calculate the Default Op Time, the default value in V1 was 1 HOUR (60*60*1000)
     -- However this doesn't work for small maintenance windows.  Small maintenance windows
@@ -547,20 +523,23 @@ BEGIN
 	
 	DECLARE cuIndexList
 	 CURSOR LOCAL FORWARD_ONLY STATIC READ_ONLY
-	    FOR SELECT DatabaseID, DatabaseName, SchemaName, TableID, TableName, IndexID, IndexName, IndexFillFactor, OfflineOpsAllowed, LastManaged, LastScanned, LastEvaluated, SkipCount, MaxSkipCount
+	    FOR SELECT DatabaseID, DatabaseName, SchemaName, TableID, TableName, IndexID, PartitionNumber, IndexName, IndexFillFactor, OfflineOpsAllowed, LastManaged, LastScanned, LastEvaluated, SkipCount, MaxSkipCount
 	          FROM dbo.MasterIndexCatalog MIC
 	          JOIN dbo.MaintenanceWindow  MW   ON MIC.MaintenanceWindowID = MW.MaintenanceWindowID
 	         WHERE MW.MaintenanceWindowName = @MaintenanceWindowName
-               AND MIC.RangeScanCount > 0
+               AND ((MIC.RangeScanCount > 0 AND @IgnoreRangeScans = 0) OR (@IgnoreRangeScans = 1))
           ORDER BY MIC.LastManaged ASC, MIC.SkipCount ASC, RangeScanCount DESC
 	
 	OPEN cuIndexList
 	
 		FETCH NEXT FROM cuIndexList
-		INTO @DatabaseID, @DatabaseName, @SchemaName, @TableID, @TableName, @IndexID, @IndexName, @IndexFillFactor, @OfflineOpsAllowed, @LastManaged, @LastScanned, @LastEvaluated, @SkipCount, @MaxSkipCount
+		INTO @DatabaseID, @DatabaseName, @SchemaName, @TableID, @TableName, @IndexID, @PartitionNumber, @IndexName, @IndexFillFactor, @OfflineOpsAllowed, @LastManaged, @LastScanned, @LastEvaluated, @SkipCount, @MaxSkipCount
 		
 		WHILE @@FETCH_STATUS = 0
 		BEGIN  -- START -- CURSOR
+
+			IF (@DebugMode = 1)
+				PRINT '... Assessing Index: ' + @DatabaseName + '.' + @SchemaName + '.' + @TableName + '(' + @IndexName + ' Partition: ' + CAST(@PartitionNumber AS VARCHAR) + ')'
 
             -- Only manage the current index if current database's tlog is not full, index skip count has been reached
             -- and there is still time in maintenance window.
@@ -569,10 +548,14 @@ BEGIN
                              ((DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) < @MWEndTime))
             BEGIN -- START -- Maintain Indexes for Databases where TLog is not Full.
 
+				IF (@DebugMode = 1)
+					PRINT '... ... Evaluating Index'
+
 			    SET @IndexOperation = 'NOOP'      --No Operation
 				SET @ReasonForNOOP = 'No Reason.' --Default value.
 			    SET @RebuildOnline = 1		      --If rebuild is going to execute it should be online.
 
+				-- Update critical settings before maintaing to make sure the indexes are not disabled.
 			    SET @SQL = 'UPDATE dbo.MasterIndexCatalog
 			                   SET IsDisabled = i.is_disabled,
 			                       IndexPageLockAllowed = i.allow_page_locks
@@ -581,8 +564,12 @@ BEGIN
 			                    ON MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
 			                   AND MIC.TableID = i.object_id 
 			                   AND MIC.IndexID = i.index_id
+							  JOIN [' + @DatabaseName + '].sys.partitions p
+							    ON i.object_id = p.object_id
+						       AND i.index_id = p.index_id
                              WHERE i.object_id = ' + CAST(@TableID AS varchar) + '
-                               AND i.index_id = ' + CAST(@IndexID AS varchar) 
+                               AND i.index_id = ' + CAST(@IndexID AS varchar)  + '
+							   AND p.partition_number = ' + CAST(@PartitionNumber AS varchar)
                                
 			    EXEC (@SQL)
 
@@ -594,14 +581,16 @@ BEGIN
 			     WHERE MIC.DatabaseID = @DatabaseID
 			       AND MIC.TableID = @TableID
 			       AND MIC.IndexID = @IndexID
+				   AND MIC.PartitionNumber = @PartitionNumber
 
-                -- Since it is not skipped; the skip counter is reinitialized to 0.
+                -- Since it is not skipped; the skip counter is reinitialized to 0.				
 				UPDATE dbo.MasterIndexCatalog
 				   SET SkipCount = 0,
                        LastEvaluated = GetDate()
 				 WHERE DatabaseID = @DatabaseID
 				   AND TableID = @TableID
 				   AND IndexID = @IndexID 
+				   AND PartitionNumber = @PartitionNumber
 			 
 			    IF (@IsDisabled = 0)
 			    BEGIN -- START -- Decide on Index Operation
@@ -612,7 +601,7 @@ BEGIN
 				    SET @OpStartTime = GETDATE()
 				
 				    SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
-				      FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,null,'LIMITED')
+				      FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,@PartitionNumber,'LIMITED')
 
 				    SET @OpEndTime = GETDATE()
 				
@@ -622,13 +611,14 @@ BEGIN
                     WHERE MIC.DatabaseID = @DatabaseID
                         AND MIC.TableID = @TableID
                         AND MIC.IndexID = @IndexID
+						AND MIC.PartitionNumber = @PartitionNumber
 
 				    UPDATE dbo.MasterIndexCatalog
-				       SET LastScanned = @OpEndTime,
-				           LastScannedTime = DATEDIFF(MILLISECOND,@OpStartTime,@OpEndTime)
+				       SET LastScanned = @OpEndTime
 				     WHERE DatabaseID = @DatabaseID
 				       AND TableID = @TableID
 				       AND IndexID = @IndexID 
+					   AND PartitionNumber = @PartitionNumber
 				
 				    -- If fragmentation level is less then 10 we do not need to look at the index
 				    -- does not matter if it is hot or other.
@@ -638,31 +628,9 @@ BEGIN
 					    -- Evaluate if the index supports online operations or not.
 
                         -- Lob Column Types
-                        -- image, ntext, text, varchar(max), nvarchar(max), varbinary(max), and xml. 
-
-                        IF (@IndexID > 1)
-                        BEGIN
-
-                            -- A non-clustered index can be built online as long as there are no
-                            -- lob column times in definition or include type.
-
-                            SET @SQL = 'DECLARE @RowsFound int
-                             
-                                        SELECT @RowsFound = COUNT(*)
-									      FROM [' + @DatabaseName + '].sys.indexes i
-                                          JOIN [' + @DatabaseName + '].sys.index_columns ic
-                                            ON i.object_id = ic.object_id
-                                           AND i.index_id = ic.index_id
-                                          JOIN [' + @DatabaseName + '].sys.columns c
-                                            ON ic.column_id = c.column_id
-                                           AND ic.object_id = c.object_id
-                                         WHERE (   (     c.max_length = -1
-                                                     AND c.system_type_id IN (167,231,165,241))
-                                                OR ( c.system_type_id IN (34,35,99)))
-                                           AND i.object_id = ' + CAST(@TableID AS varchar) + '
-                                           AND i.index_id = ' + CAST(@IndexID AS varchar) 
-                        END
-                        ELSE
+                        -- image, ntext, text, binary  Can't do online operations on Clustered Index if there are 
+						-- LOB columns.
+						IF (@IndexID = 1)
                         BEGIN
 
                             -- A cluster index can only be online if there are no lob column types
@@ -675,45 +643,42 @@ BEGIN
                                          JOIN [' + @DatabaseName + '].sys.tables t
                                            ON i.object_id = t.object_id
                                          JOIN [' + @DatabaseName + '].sys.columns c
-                                          ON t.object_id = c.object_id
-                                       WHERE i.index_id = 1
-                                         AND (   (     c.max_length = -1
-                                                   AND c.system_type_id IN (167,231,165,241))
-                                              OR ( c.system_type_id IN (34,35,99)))
-                                          AND i.object_id = ' + CAST(@TableID AS varchar)
-                        END
+                                           ON t.object_id = c.object_id
+							             JOIN [' + @DatabaseName + '].sys.partitions p
+							               ON i.object_id = p.object_id
+						                  AND i.index_id = p.index_id
+                                        WHERE i.index_id = 1
+                                          AND c.system_type_id IN (34,35,99,173)
+                                          AND i.object_id = ' + CAST(@TableID AS varchar) + '
+										  AND p.partition_number = ' + CAST(@PartitionNumber AS VARCHAR) + '
 
-					    SET @SQL = @SQL + '
-									   
 								    IF (@RowsFound > 0)
 								    BEGIN
 									
+										-- When updating the Online Supported same rule will apply to all
+										-- partitions.
 									    UPDATE dbo.MasterIndexCatalog
 										   SET OnlineOpsSupported = 0
-										  FROM dbo.MasterIndexCatalog MIC
-	                                      JOIN [' + @DatabaseName + '].sys.indexes i (NOLOCK)
-										    ON MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
-										   AND MIC.TableID = i.object_id 
-										   AND MIC.IndexID = i.index_id
-										 WHERE i.object_id = ' + CAST(@TableID AS varchar) + '
-										   AND i.index_id = ' + CAST(@IndexID AS varchar) + '
+										 WHERE DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
+										   AND TableID = ' + CAST(@TableID AS varchar) + '
+										   AND IndexID = ' + CAST(@IndexID AS varchar) + '
 											   
-								    END
-								    ELSE
-								    BEGIN
-									
-									    UPDATE dbo.MasterIndexCatalog
-										   SET OnlineOpsSupported = 1
-										  FROM dbo.MasterIndexCatalog MIC
-	                                      JOIN [' + @DatabaseName + '].sys.indexes i (NOLOCK)
-										    ON MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
-										   AND MIC.TableID = i.object_id 
-										   AND MIC.IndexID = i.index_id
-										 WHERE i.object_id = ' + CAST(@TableID AS varchar) + '
-										   AND i.index_id = ' + CAST(@IndexID AS varchar) + '
-											   
-								    END
-								    '
+								    END'
+                        END
+						ELSE
+						BEGIN
+
+							SET @SQL = ' UPDATE dbo.MasterIndexCatalog
+											SET OnlineOpsSupported = 1
+										   FROM dbo.MasterIndexCatalog MIC
+										   JOIN [' + @DatabaseName + '].sys.indexes i (NOLOCK)
+											 ON MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
+											AND MIC.TableID = i.object_id 
+											AND MIC.IndexID = i.index_id
+										  WHERE i.object_id = ' + CAST(@TableID AS varchar) + '
+											AND i.index_id = ' + CAST(@IndexID AS varchar) 
+
+						END
 
 					    EXEC (@SQL)
 					
@@ -721,7 +686,8 @@ BEGIN
 					      FROM dbo.MasterIndexCatalog MIC
 					     WHERE MIC.DatabaseID = @DatabaseID
 					       AND MIC.TableID = @TableID
-					       AND MIC.IndexID = @IndexID					
+					       AND MIC.IndexID = @IndexID
+						   AND MIC.PartitionNumber = @PartitionNumber
 							
 					    -- Index has some fragmentation and is at least 64 pages.  So we want to evaluate
 					    -- if it should be maintained or not.  If it is HOT Table, it should be
@@ -762,6 +728,7 @@ BEGIN
 								         WHERE MIC.DatabaseID = @DatabaseID
 								           AND MIC.TableID = @TableID
 								           AND MIC.IndexID = @IndexID 
+										   AND MIC.PartitionNumber = @PartitionNumber
 								       
 										SET @ReasonForNOOP = 'Error in index maintenance, please reference additional details in history log.'
 										
@@ -784,7 +751,7 @@ BEGIN
                                         --                 can be rebuild to manage fragmentation, however we do not want to manage
                                         --                 the fragmentation at a low value.  Having low fragmentation
                                         --                 this functionality was still triggering a rebuild.  Which is costly
-                                        --                 operation for large indexes. Replaced with code below, i.e.
+                                        --                 operation for large indexes. Replaced with code above, i.e.
                                         --                 Index Operation = NOOP.
 
                                         /*
@@ -839,6 +806,7 @@ BEGIN
 											     WHERE MIC.DatabaseID = @DatabaseID
 											       AND MIC.TableID = @TableID
 											       AND MIC.IndexID = @IndexID 
+												   AND MIC.PartitionNumber = @PartitionNumber
 											       
 												SET @ReasonForNOOP = 'Error in index maintenance, please reference additional details in history log.'
 										    END
@@ -867,6 +835,8 @@ BEGIN
 				ELSE
 				BEGIN -- START -- Index is disabled just record reason for NOOP
 					SET @ReasonForNOOP = 'Index disabled.'
+					IF (@DebugMode = 1)
+						PRINT '... ... Index disabled.'
 				END -- END -- Index is disabled just record reason for NOOP
 				
 			    IF (@IndexOperation <> 'NOOP')
@@ -880,42 +850,150 @@ BEGIN
 				    DECLARE @OpTime				int
 				    DECLARE @EstOpEndTime		datetime
 				 
-				    SELECT @IndexReorgTime = LastReorgTime, @IndexRebuildTime = LastRebuildTime
+					-- Calculate the approx time for index operation.  This can be one of three values.
+					--
+					-- Chosing the largest of the three.
+					-- Default Value : Mainteance Window Size / 10.
+					-- Previous Operation History : Average
+					-- Object of Similar Size (+/- 15%) : Average
+
+					IF (@DebugMode = 1)
+						PRINT '... ... Index Op Selected: ' + @IndexOperation
+
+					DECLARE @StdDivTime FLOAT
+					DECLARE @AvgTime FLOAT
+					DECLARE @HistCount INT
+					DECLARE @PartitionCount INT
+
+					SELECT @PartitionCount = COUNT(*) 
 				      FROM dbo.MasterIndexCatalog MIC
-				     WHERE MIC.DatabaseID = @DatabaseID
-				       AND MIC.TableID = @TableID
-				       AND MIC.IndexID = @IndexID
-			
-				    -- If the index has never been maintained the last reorg / rebuild time will
-				    -- be zero.  In those cases we will assume the index operation will take
-				    -- approximately 1 hour to complete.
-				
-				    IF (@IndexReorgTime = 0)
-					    SET @IndexReorgTime = @DefaultOpTime
-					
-				    IF (@IndexRebuildTime = 0)
-					    SET @IndexRebuildTime = @DefaultOpTime
-					
-				    IF (@IndexOperation = 'REORGANIZE')
-					    SET @OpTime = @IndexReorgTime
-				    ELSE
-					    SET @OpTime = @IndexRebuildTime
+					 WHERE MIC.DatabaseID = @DatabaseID
+					   AND MIC.TableID = @TableID
+					   AND MIC.IndexID = @IndexID
+
+					-- Step #1: Do we have history for current object?
+					SELECT @HistCount = COUNT(*) 
+				      FROM dbo.MaintenanceHistory MH
+					  JOIN dbo.MasterIndexCatalog MIC
+						ON MH.MasterIndexCatalogID = MIC.ID
+					 WHERE MH.OperationType LIKE @IndexOperation + '%'
+					   AND MIC.DatabaseID = @DatabaseID
+					   AND MIC.TableID = @TableID
+					   AND MIC.IndexID = @IndexID
+					   AND MIC.PartitionNumber = @PartitionNumber
+
+					IF (@HistCount > 0)
+					BEGIN
+
+						IF (@DebugMode = 1)
+							PRINT '... ... Calculating operation time cost.'
+
+						-- Step #1: Calculate standard diviation to help us eliminate outliers.
+						SELECT @StdDivTime = STDEV(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MIC.DatabaseID = @DatabaseID
+						   AND MIC.TableID = @TableID
+						   AND MIC.IndexID = @IndexID
+						   AND MIC.PartitionNumber = @PartitionNumber
+
+						-- Step #2: Calculate the average time.
+						SELECT @AvgTime = AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MIC.DatabaseID = @DatabaseID
+						   AND MIC.TableID = @TableID
+						   AND MIC.IndexID = @IndexID
+						   AND MIC.PartitionNumber = @PartitionNumber
+
+						-- Step #3: Calculate the average time removing excluding outliers.
+						SELECT @AvgTime = AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MIC.DatabaseID = @DatabaseID
+						   AND MIC.TableID = @TableID
+						   AND MIC.IndexID = @IndexID
+						   AND MIC.PartitionNumber = @PartitionNumber
+						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) > (@AvgTime - @StdDivTime)
+						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) < (@AvgTime + @StdDivTime)
+
+						IF (@DebugMode = 1)
+							PRINT '... ... Cost Calculated (ms): ' + CAST(@AvgTime AS VARCHAR)
+					END
+					ELSE
+					BEGIN
+
+						IF (@DebugMode = 1)
+							PRINT '... ... New index unknown cost, calculating based on similar index sizes.'
+
+						-- Step #1: Calculate standard diviation to help us eliminate outliers.
+						SELECT @StdDivTime = STDEV(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
+						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
+
+						-- Step #2: Calculate the average time.
+						SELECT @AvgTime = AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
+						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
+
+						-- Step #3: Calculate the average time removing excluding outliers.
+						SELECT @AvgTime = AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime))
+						  FROM dbo.MaintenanceHistory MH
+						  JOIN dbo.MasterIndexCatalog MIC
+							ON MH.MasterIndexCatalogID = MIC.ID
+						 WHERE MH.OperationType LIKE @IndexOperation + '%'
+						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
+						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
+						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) > (@AvgTime - @StdDivTime)
+						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) < (@AvgTime + @StdDivTime)
+
+						IF (@DebugMode = 1)
+							PRINT '... ... Cost Calculated (ms): ' + CAST(@AvgTime AS VARCHAR)
+					END
+
+					IF (@AvgTime = 0)
+						SET @OpTime = @DefaultOpTime
+					Else
+						SET @OpTime = @AvgTime
 				
 				    SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 				
+					IF (@DebugMode = 1)
+						PRINT '... ... Estimated Operation Completion DateTime ' + CONVERT(VARCHAR(255),@EstOpEndTime,121)
+
 				    -- Confirm operation will complete before the Maintenance Window End Time.
 				    IF (@EstOpEndTime < @MWEndTime)
 				    BEGIN
+
+						IF (@DebugMode = 1)
+							PRINT '... ... ... Possible to maintain index.'
 				    
 						-- Index is being maintained so we will decrement the MaxSkipCount by 1; minimum value is 0.
-						UPDATE dbo.MasterIndexCatalog
-						   SET MaxSkipCount = CASE WHEN (@LastManaged = '1900-01-01 00:00:00.000') AND @MaxSkipCount > 0 THEN @MaxSkipCount - 1
-												   WHEN (@LastManaged = '1900-01-01 00:00:00.000') AND @MaxSkipCount < 0 THEN 0
-												   WHEN (@MaxSkipCount - DATEDIFF(DAY,@LastManaged,GETDATE()) < 1) THEN 0
-												   ELSE @MaxSkipCount - DATEDIFF(DAY,@LastManaged,GETDATE()) END
-						 WHERE DatabaseID = @DatabaseID
-						   AND TableID = @TableID
-						   AND IndexID = @IndexID 
+						-- Only adjust if it is actual execution.
+						IF (@PrintOnlyNoExecute = 0)
+							UPDATE dbo.MasterIndexCatalog
+							   SET MaxSkipCount = CASE WHEN (@LastManaged = '1900-01-01 00:00:00.000') AND @MaxSkipCount > 0 THEN @MaxSkipCount - 1
+													   WHEN (@LastManaged = '1900-01-01 00:00:00.000') AND @MaxSkipCount < 0 THEN 0
+													   WHEN (@MaxSkipCount - DATEDIFF(DAY,@LastManaged,GETDATE()) < 1) THEN 0
+													   ELSE @MaxSkipCount - DATEDIFF(DAY,@LastManaged,GETDATE()) END
+							 WHERE DatabaseID = @DatabaseID
+							   AND TableID = @TableID
+							   AND IndexID = @IndexID 
+							   AND PartitionNumber = @PartitionNumber
 					
 					    SET @SQL = 'USE [' + @DatabaseName + ']
 								    ALTER INDEX [' + @IndexName + ']
@@ -925,58 +1003,76 @@ BEGIN
 					    BEGIN
 						    SET @SQL = @SQL + 
 								       ' REORGANIZE'
+							IF (@PartitionCount > 1)
+								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
 					    END
 					    ELSE
 					    BEGIN
 
-						    IF (@IndexFillFactor = 0)
-						    BEGIN
-							    SET @IndexFillFactor = 95
-							    SET @FFA = 0
-						    END
-						    ELSE
-						    BEGIN
+							IF (@PrintOnlyNoExecute = 0)
+							BEGIN
 
-                                -- Adjust fill factor by 0 to 15%; for each day it didn't get maintained
-                                -- it will adjust fill factor by smaller number.
-                                --
-                                -- e.g. If index was maintained just yesterday; it'll adjust it by 15%
-                                --      If index was maintained 8 days ago; it will adjust it by 1%
-                                --      If index was maintained 9+ days ago; it will adjust it by 0%
+								IF (@DebugMode = 1)
+									PRINT '... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
-							    SET @FFA = ((8-DATEDIFF(DAY,@LastManaged,GETDATE()))*2)+1
+								IF (@IndexFillFactor = 0)
+								BEGIN
+									SET @IndexFillFactor = 95
+									SET @FFA = 0
+								END
+								ELSE
+								BEGIN
 
-							    IF (@FFA < 1)
-							       SET @FFA = 0
+									-- Adjust fill factor by 0 to 15%; for each day it didn't get maintained
+									-- it will adjust fill factor by smaller number.
+									--
+									-- e.g. If index was maintained just yesterday; it'll adjust it by 15%
+									--      If index was maintained 8 days ago; it will adjust it by 1%
+									--      If index was maintained 9+ days ago; it will adjust it by 0%
 
-							    IF (@FFA > 15)
-							       SET @FFA = 15
-						    END
+									SET @FFA = ((8-DATEDIFF(DAY,@LastManaged,GETDATE()))*2)+1
+
+									IF (@FFA < 1)
+									   SET @FFA = 0
+
+									IF (@FFA > 15)
+									   SET @FFA = 15
+								END
 								
-						    SET @IndexFillFactor = @IndexFillFactor - @FFA
+								SET @IndexFillFactor = @IndexFillFactor - @FFA
 								
-						    IF (@IndexFillFactor < 70)
-						    BEGIN
-							    SET @IndexFillFactor = 70
-							    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-							    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
-									    'Index fill factor is dropping below 70%.  Please evaluate if the index is using a wide key, which might be causing excessive fragmentation.'
-								    FROM dbo.MasterIndexCatalog MIC
-								    WHERE MIC.DatabaseID = @DatabaseID
-								    AND MIC.TableID = @TableID
-								    AND MIC.IndexID = @IndexID 
-						    END
+								IF (@IndexFillFactor < 70)
+								BEGIN
+									SET @IndexFillFactor = 70
+									INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+									SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
+											'Index fill factor is dropping below 70%.  Please evaluate if the index is using a wide key, which might be causing excessive fragmentation.'
+										FROM dbo.MasterIndexCatalog MIC
+										WHERE MIC.DatabaseID = @DatabaseID
+										AND MIC.TableID = @TableID
+										AND MIC.IndexID = @IndexID 
+										AND MIC.PartitionNumber = @PartitionNumber
+								END
 								
-						    UPDATE dbo.MasterIndexCatalog
-							   SET IndexFillFactor = @IndexFillFactor
-							 WHERE DatabaseID = @DatabaseID
-							   AND TableID = @TableID
-							   AND IndexID = @IndexID 
+								IF (@DebugMode = 1)
+									PRINT '... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+
+								UPDATE dbo.MasterIndexCatalog
+								   SET IndexFillFactor = @IndexFillFactor
+								 WHERE DatabaseID = @DatabaseID
+								   AND TableID = @TableID
+								   AND IndexID = @IndexID 
+								   AND PartitionNumber = @PartitionNumber
+							END
 
 						    SET @SQL = @SQL + 
-								       ' REBUILD 
-									     WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', 
-									     SORT_IN_TEMPDB = ON,'
+								       ' REBUILD '
+
+							IF (@PartitionCount > 1)
+								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
+
+							SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', 
+									            SORT_IN_TEMPDB = ON,'
 
 
 						    IF (@RebuildOnline = 1)
@@ -997,50 +1093,50 @@ BEGIN
 					
 					    SET @OpStartTime = GETDATE()
 					
-					    EXEC (@SQL)
+						IF (@PrintOnlyNoExecute = 1)
+							Print @SQL
+						ELSE
+						BEGIN
+							IF (@DebugMode = 1)
+								PRINT '... ... ... Starting index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+							EXEC (@SQL)
+							IF (@DebugMode = 1)
+								PRINT '... ... ... Finished index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+						END
 					
 					    SET @OpEndTime = GETDATE()
 					
-					    UPDATE dbo.MasterIndexCatalog
-					       SET LastManaged = @OpEndTime
-					     WHERE DatabaseID = @DatabaseID
-					       AND TableID = @TableID
-					       AND IndexID = @IndexID  
+						-- Only update if actual execution.
+						IF (@PrintOnlyNoExecute = 0)
+							UPDATE dbo.MasterIndexCatalog
+							   SET LastManaged = @OpEndTime
+							 WHERE DatabaseID = @DatabaseID
+							   AND TableID = @TableID
+							   AND IndexID = @IndexID 
+							   AND PartitionNumber = @PartitionNumber
 				
-				
-					    IF (@IndexOperation = 'REORGANIZE')
-					    BEGIN
-						    UPDATE dbo.MasterIndexCatalog
-						       SET LastReorgTime = DATEDIFF(MILLISECOND,@OpStartTime,@OpEndTime)
-						     WHERE DatabaseID = @DatabaseID
-						       AND TableID = @TableID
-						       AND IndexID = @IndexID  
-					    END
-					    ELSE
-					    BEGIN
-						    UPDATE dbo.MasterIndexCatalog
-						       SET LastRebuildTime = DATEDIFF(MILLISECOND,@OpStartTime,@OpEndTime)
-						     WHERE DatabaseID = @DatabaseID
-						       AND TableID = @TableID
-						       AND IndexID = @IndexID  
-					    END
-					
-					    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-					    SELECT MIC.ID,
-					           @PageCount,
-						       @FragmentationLevel,
-						       CASE WHEN @RebuildOnline = 1 THEN
-						          @IndexOperation + ' (ONLINE)'
-						       ELSE
-						          @IndexOperation + ' (OFFLINE)'
-						       END, @OpStartTime, @OpEndTime,'Completed. Command executed (' + @SQL + ')'
-					      FROM dbo.MasterIndexCatalog MIC
-					     WHERE MIC.DatabaseID = @DatabaseID
-					       AND MIC.TableID = @TableID
-					       AND MIC.IndexID = @IndexID 
+						-- Only Log if actual execution.
+						IF (@PrintOnlyNoExecute = 0)
+							INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+							SELECT MIC.ID,
+								   @PageCount,
+								   @FragmentationLevel,
+								   CASE WHEN @RebuildOnline = 1 THEN
+									  @IndexOperation + ' (ONLINE)'
+								   ELSE
+									  @IndexOperation + ' (OFFLINE)'
+								   END, @OpStartTime, @OpEndTime,'Completed. Command executed (' + @SQL + ')'
+							  FROM dbo.MasterIndexCatalog MIC
+							 WHERE MIC.DatabaseID = @DatabaseID
+							   AND MIC.TableID = @TableID
+							   AND MIC.IndexID = @IndexID 
+							   AND MIC.PartitionNumber = @PartitionNumber
 				
                         -- Check to make sure the transaction log file on the current database is not full.
                         -- If the transaction log file is full, we cannot maintain any more indexes for current database.
+
+						IF (@DebugMode =1)
+							PRINT '... ... ... Checking for TLog space'
 
                         IF EXISTS (SELECT * FROM tempdb.sys.all_objects WHERE name LIKE '#TLogSpace%')
                             DELETE FROM #TLogSpace
@@ -1056,6 +1152,9 @@ BEGIN
 
                         IF (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)
                         BEGIN
+							IF (@DebugMode =1)
+								PRINT '... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'
+
 						    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
 						    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
 						           'Database reached Max Log Space Usage limit, therefore no further indexes will be maintained in this maintenance window current database.'
@@ -1063,6 +1162,7 @@ BEGIN
 					         WHERE MIC.DatabaseID = @DatabaseID
 					           AND MIC.TableID = @TableID
 					           AND MIC.IndexID = @IndexID 
+							   AND MIC.PartitionNumber = @PartitionNumber
 
                             UPDATE dbo.DatabaseStatus
                                SET IsLogFileFull = 1
@@ -1076,40 +1176,11 @@ BEGIN
 					    IF (@LastManaged < DATEADD(DAY,-14,GETDATE()))
 					    BEGIN
 
-                            IF (@OpTime > 0)
-                            BEGIN -- BEGIN -- Operation Time Adjustment
-
-                                -- Since the index was skipped due to maintenance window constraint, we are going to decrement
-                                -- the time it takes to maintain the said index by 5% of it's current cost.
-                                -- 
-                                -- Current version of SmartIndexManagement does not have statistical analysis of the
-                                -- operation times.  Therefore last value is used.  However what if last operation took
-                                -- extended time due to blocking, or other factors.  It will plague the index forever
-                                -- without decrementing the cost.
-
-                                SET @OpTime = @OpTime - (@OpTime * 0.05)
-
-                                IF (@OpTime <= 0)
-                                    SET @OpTime = 1000 -- If the Op Time falls below or equip to zero; we'll reinitialize to 1 Second.
-
-					            IF (@IndexOperation = 'REORGANIZE')
-					            BEGIN
-						            UPDATE dbo.MasterIndexCatalog
-						                SET LastReorgTime = @OpTime
-						                WHERE DatabaseID = @DatabaseID
-						                AND TableID = @TableID
-						                AND IndexID = @IndexID  
-					            END
-					            ELSE
-					            BEGIN
-						            UPDATE dbo.MasterIndexCatalog
-						                SET LastRebuildTime = @OpTime
-						                WHERE DatabaseID = @DatabaseID
-						                AND TableID = @TableID
-						                AND IndexID = @IndexID  
-					            END
-
-                            END -- END -- Operation Time Adjustment
+                            -- If we have not been able to maintain this index due to estimated mainteance cost
+							-- based on statistics analysis above, we should flag this for the dba team.
+							--
+							-- This means this index is too large to maintain for current mainteance windows defined.
+							-- Team should look at creating a larger window for this index.
 										
 						    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
 						    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
@@ -1131,6 +1202,7 @@ BEGIN
 						 WHERE DatabaseID = @DatabaseID
 						   AND TableID = @TableID
 						   AND IndexID = @IndexID 
+						   AND PartitionNumber = @PartitionNumber
 					
 					    SET @EstOpEndTime = DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())
 					
@@ -1149,11 +1221,14 @@ BEGIN
 					-- to better tune it for next time it becomes fragmented.
 					--
 					-- However if index is disabled we do not need to do anything just record it in history table the state
-					-- and reason for NOOP.
+					-- and reason for NOOP.  Only adjust Fill Factor setting if it is actual run.
 					
-					IF (@IsDisabled = 0)
+					IF ((@IsDisabled = 0) AND (@PrintOnlyNoExecute = 0))
 					BEGIN -- START -- No Operation for current index and it is not disabled
 					
+						IF (@DebugMode = 1)
+							PRINT '... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+
 						IF (@IndexFillFactor = 0)
 						BEGIN
 							SET @IndexFillFactor = 95
@@ -1174,7 +1249,10 @@ BEGIN
 									
 						IF (@IndexFillFactor > 99)
 							SET @IndexFillFactor = 99
-									
+							
+						IF (@DebugMode = 1)
+							PRINT '... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+
 						UPDATE dbo.MasterIndexCatalog
 						   SET IndexFillFactor = @IndexFillFactor,
 							   MaxSkipCount = CASE WHEN (@LastScanned = '1900-01-01 00:00:00.000') AND @MaxSkipCount >= 0 THEN @MaxSkipCount + 1
@@ -1184,24 +1262,30 @@ BEGIN
 						 WHERE DatabaseID = @DatabaseID
 						   AND TableID = @TableID
 						   AND IndexID = @IndexID
+						   AND PartitionNumber = @PartitionNumber
 
 					END -- END -- No Operation for current index and it is not disabled
 
-					INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-					SELECT MIC.ID,
-							@PageCount,
-							@FragmentationLevel,
-							'NOOP', @OpStartTime, @OpEndTime, @ReasonForNOOP
-						FROM dbo.MasterIndexCatalog MIC
+					IF (@LogNOOPMsgs = 1)
+						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+						SELECT MIC.ID,
+							   @PageCount,
+							   @FragmentationLevel,
+							  'NOOP', @OpStartTime, @OpEndTime, @ReasonForNOOP
+						 FROM dbo.MasterIndexCatalog MIC
 						WHERE MIC.DatabaseID = @DatabaseID
-						AND MIC.TableID = @TableID
-						AND MIC.IndexID = @IndexID 
+						  AND MIC.TableID = @TableID
+						  AND MIC.IndexID = @IndexID 
+						  AND MIC.PartitionNumber = @PartitionNumber
 							
 			    END -- END -- No Operation for current Index.
 			
             END -- END -- Maintain Indexes for Databases where TLog is not Full.
             ELSE
             BEGIN -- START -- Either TLog is Full or Skip Count has not reached Max Skip Count or We are out of time!
+
+				IF (@DebugMode = 1)
+					PRINT '... ... Skipping Index - Index Skipped or Mainteance Window Reached or TLog Full'
 
                 -- There is no operation to execute if database TLog is full.  However if 
                 -- skip count has not been reached.  We must increment Skip Count for next time.
@@ -1216,12 +1300,21 @@ BEGIN
                     IF (@SkipCount <= @MaxSkipCount)
                     BEGIN -- START -- Increment Skip Count
 
-				        UPDATE dbo.MasterIndexCatalog
-				           SET SkipCount = @SkipCount + DATEDIFF(DAY,@LastEvaluated,GetDate()),
-                               LastEvaluated = GetDate()
-				         WHERE DatabaseID = @DatabaseID
-				           AND TableID = @TableID
-				           AND IndexID = @IndexID 
+						-- Only Adjust Skip Count Values if Normal Run
+						IF (@PrintOnlyNoExecute = 0)
+						BEGIN
+
+							IF (@DebugMode = 1)
+								PRINT '... ... Increasing skip count.'
+
+							UPDATE dbo.MasterIndexCatalog
+							   SET SkipCount = @SkipCount + DATEDIFF(DAY,@LastEvaluated,GetDate()),
+								   LastEvaluated = GetDate()
+							 WHERE DatabaseID = @DatabaseID
+							   AND TableID = @TableID
+							   AND IndexID = @IndexID 
+							   AND PartitionNumber = @PartitionNumber
+						END
 
                     END -- END -- Increment Skip Count
                 END -- END -- Database T-Log Is Not Full And We Are Not Out Of Time
@@ -1230,13 +1323,15 @@ BEGIN
                     IF ((NOT EXISTS (SELECT * FROM dbo.DatabaseStatus WHERE DatabaseID = @DatabaseID AND IsLogFileFull = 1)) AND
                         (DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
                     BEGIN -- START -- Database T-Log Is Not Full But We Are Out Of Time
-                        RETURN
+						IF (@DebugMode = 1)
+								PRINT '... ... Reached end of mainteance window.'
+                        GOTO TheEnd
                     END -- END -- Database T-Log Is Not Full But We Are Out Of Time
                 END
             END -- END -- Either TLog is Full or Skip Count has not reached Max Skip Count
 
 			FETCH NEXT FROM cuIndexList
-			INTO @DatabaseID, @DatabaseName, @SchemaName, @TableID, @TableName, @IndexID, @IndexName, @IndexFillFactor, @OfflineOpsAllowed, @LastManaged, @LastScanned, @LastEvaluated, @SkipCount, @MaxSkipCount
+			INTO @DatabaseID, @DatabaseName, @SchemaName, @TableID, @TableName, @IndexID, @PartitionNumber, @IndexName, @IndexFillFactor, @OfflineOpsAllowed, @LastManaged, @LastScanned, @LastEvaluated, @SkipCount, @MaxSkipCount
 		
 		END -- END -- CURSOR
 		
@@ -1244,6 +1339,10 @@ BEGIN
 	
 	DEALLOCATE cuIndexList
 	-- End of Stored Procedure
+
+TheEnd:
+IF (@DebugMode = 1)
+	PRINT 'Finishing index mainteance at ' + CONVERT(VARCHAR(255),GETDATE(),121)
 
 END
 GO
