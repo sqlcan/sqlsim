@@ -70,9 +70,10 @@ A "contributor" is any person that distributes its contribution under this licen
 --
 -- Version: 2.02
 --
--- 2.00 Updated for Partitions and SQL 2019.
--- 2.01 Resolved Issue #1.
--- 2.02 Resolved Issue #9.
+-- 2.00.00 Updated for Partitions and SQL 2019.
+-- 2.01.00 Resolved Issue #1.
+-- 2.02.00 Resolved Issue #9.
+-- 2.02.01 Resovled Issue #10.
 --------------------------------------------------------------------------------------
 
 USE [master]
