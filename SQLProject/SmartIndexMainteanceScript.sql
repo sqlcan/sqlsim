@@ -66,11 +66,13 @@ A "contributor" is any person that distributes its contribution under this licen
 -- Developed by: Mohit K. Gupta
 --               mogupta@microsoft.com
 --
--- Last Updated: Oct. 9, 2020
+-- Last Updated: Dec. 16, 2020
 --
--- Version: 2.00
+-- Version: 2.02
 --
 -- 2.00 Updated for Partitions and SQL 2019.
+-- 2.01 Resolved Issue #1.
+-- 2.02 Resolved Issue #9.
 --------------------------------------------------------------------------------------
 
 USE [master]
@@ -281,8 +283,8 @@ BEGIN
 		BEGIN
 			
 			-- Update Master Index Catalog with meta-data, new objects identified.
-			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexFillFactor)
-			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor
+			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexFillFactor, MaintenanceWindowID)
+			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor, ' + CAST(@DefaultMainteanceWindowID AS VARCHAR) + ' 
 						  FROM [' + @DatabaseName + '].sys.schemas s
                           JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
                           JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
