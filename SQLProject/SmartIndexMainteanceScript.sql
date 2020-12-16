@@ -78,142 +78,167 @@ A "contributor" is any person that distributes its contribution under this licen
 USE [master]
 GO
 
--- If database SQLSIM already exists, drop it.
-IF EXISTS (SELECT * FROM sys.databases WHERE name = 'SQLSIM')
+-- If database does not exist, create it with default configuration.
+--
+-- If database already exist, we expect all the code to respect existing
+-- structures and data.  There by providing continuation for the solution
+-- and protect existing data and settings.
+
+IF NOT EXISTS (SELECT * FROM sys.databases WHERE name = 'SQLSIM')
 BEGIN
-	ALTER DATABASE SQLSIM SET OFFLINE WITH ROLLBACK IMMEDIATE
-	ALTER DATABASE SQLSIM SET ONLINE
-	DROP DATABASE SQLSIM
+	CREATE DATABASE [SQLSIM]
+	ALTER DATABASE [SQLSIM] SET RECOVERY SIMPLE 
 END
+GO
 
 -- Create a new database setting the recovery model to SIMPLE.
-CREATE DATABASE [SQLSIM]
-GO
-
-ALTER DATABASE [SQLSIM] SET RECOVERY SIMPLE 
-GO
 
 USE [SQLSIM]
 GO
 
 -- Setup up the SQLSIM Meta-data tables used to maintain the indexes
-IF OBJECT_ID('dbo.MaintenanceWindow') IS NOT NULL
-	DROP TABLE dbo.MaintenanceWindow
+IF OBJECT_ID('dbo.MaintenanceWindow') IS NULL
+BEGIN
+	CREATE TABLE dbo.MaintenanceWindow (
+		MaintenanceWindowID			int							NOT NULL	IDENTITY(1,1) 
+		CONSTRAINT pkMaintenanceWindow_MaintenanceWindowID	PRIMARY KEY,
+		MaintenanceWindowName		nvarchar(255)				NOT NULL,
+		MaintenanceWindowStartTime	time						NOT NULL
+		CONSTRAINT dfSTNullValue								DEFAULT ('0:00'),
+		MaintenanceWindowEndTime	time						NOT NULL
+		CONSTRAINT dfETNullValue								DEFAULT ('0:00'),
+		MainteanceWindowWeekdays    varchar(255)                NOT NULL
+		CONSTRAINT MainteanceWindowWeekdays                  DEFAULT ('None'),
+		[MaintenanceWindowDateModifer]  AS (CASE WHEN [MaintenanceWindowStartTime]>[MaintenanceWindowEndTime] THEN (-1) ELSE (0) END) PERSISTED NOT NULL
+	);
 
-CREATE TABLE dbo.MaintenanceWindow (
-	MaintenanceWindowID			int							NOT NULL	IDENTITY(1,1) 
-	   CONSTRAINT pkMaintenanceWindow_MaintenanceWindowID	PRIMARY KEY,
-	MaintenanceWindowName		nvarchar(255)				NOT NULL,
-	MaintenanceWindowStartTime	time						NOT NULL
-	   CONSTRAINT dfSTNullValue								DEFAULT ('0:00'),
-	MaintenanceWindowEndTime	time						NOT NULL
-	   CONSTRAINT dfETNullValue								DEFAULT ('0:00'),
-    MainteanceWindowWeekdays    varchar(255)                NOT NULL
-       CONSTRAINT MainteanceWindowWeekdays                  DEFAULT ('None'),
-	[MaintenanceWindowDateModifer]  AS (CASE WHEN [MaintenanceWindowStartTime]>[MaintenanceWindowEndTime] THEN (-1) ELSE (0) END) PERSISTED NOT NULL
-);
+	CREATE UNIQUE NONCLUSTERED INDEX uqMaintenanceWindowName ON dbo.MaintenanceWindow(MaintenanceWindowName);
 
-CREATE UNIQUE NONCLUSTERED INDEX uqMaintenanceWindowName ON dbo.MaintenanceWindow(MaintenanceWindowName);
+	INSERT INTO MaintenanceWindow (MaintenanceWindowName,MaintenanceWindowStartTime,MaintenanceWindowEndTime,MainteanceWindowWeekdays)
+		VALUES ('No Maintenance','0:00','0:00','None'),
+				('HOT Tables','23:00','1:00','None'),
+				('Maintenance Window #1','1:00','1:45','None');
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 
-INSERT INTO MaintenanceWindow (MaintenanceWindowName,MaintenanceWindowStartTime,MaintenanceWindowEndTime,MainteanceWindowWeekdays)
-     VALUES ('No Maintenance','0:00','0:00','None'),
-			('HOT Tables','23:00','1:00','None'),
-			('Maintenance Window #1','1:00','1:45','None');
+IF OBJECT_ID('dbo.DatabaseStatus') IS NULL	
+BEGIN
+	CREATE TABLE dbo.DatabaseStatus (
+		DatabaseID				 int				NOT NULL,
+		IsLogFileFull            bit                NOT NULL
+	);
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 
-IF OBJECT_ID('dbo.DatabaseStatus') IS NOT NULL
-	DROP TABLE dbo.DatabaseStatus
+IF OBJECT_ID('dbo.MetaData') IS NULL
+BEGIN
+	CREATE TABLE dbo.MetaData (
+		LastIndexUsageScanDate   datetime           NOT NULL
+			CONSTRAINT dfLastIndexUsageScanDate     DEFAULT ('1900-01-01')
+	);
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 
-CREATE TABLE dbo.DatabaseStatus (
-    DatabaseID				 int				NOT NULL,
-    IsLogFileFull            bit                NOT NULL
-);
+IF OBJECT_ID('dbo.DatabasesToSkip') IS NULL
+BEGIN	
+	CREATE TABLE dbo.DatabasesToSkip (
+		DatabaseName sysname NOT NULL
+			CONSTRAINT pkDatabasesToSkip_DBName PRIMARY KEY);
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 
-IF OBJECT_ID('dbo.MetaData') IS NOT NULL
-	DROP TABLE dbo.MetaData
+IF OBJECT_ID('dbo.MasterIndexCatalog') IS NULL
+BEGIN
+	CREATE TABLE dbo.MasterIndexCatalog (
+		ID						 bigint				NOT NULL	IDENTITY(1,1)
+			CONSTRAINT pkMasterIndexCatalog_ID		PRIMARY KEY,
+		DatabaseID				 int				NOT NULL,
+		DatabaseName			 nvarchar(255)		NOT NULL,
+		SchemaID				 int				NOT NULL,
+		SchemaName				 nvarchar(255)		NOT NULL,
+		TableID					 bigint				NOT NULL,
+		TableName				 nvarchar(255)		NOT NULL,
+		IndexID					 int				NOT NULL,
+		IndexName				 nvarchar(255)		NOT NULL,
+		PartitionNumber			 int				NOT NULL,
+		IndexFillFactor			 tinyint 			NULL
+			CONSTRAINT dfIndexFillFactor			DEFAULT(95),
+		IsDisabled				 bit				NOT NULL
+			CONSTRAINT dfIsDisabled					DEFAULT(0),	
+		IndexPageLockAllowed	 bit				NULL
+			CONSTRAINT dfIsPageLockAllowed			DEFAULT(1),	
+		OfflineOpsAllowed		 bit				NULL
+			CONSTRAINT dfOfflineOpsAllowed			DEFAULT(0),
+		RangeScanCount           bigint             NOT NULL
+			CONSTRAINT dfRangeScanCount             DEFAULT(0),
+		SingletonLookupCount     bigint             NOT NULL
+			CONSTRAINT dfSingletonLookupCount       DEFAULT(0),
+		LastRangeScanCount       bigint             NOT NULL
+			CONSTRAINT dfLastRangeScanCount         DEFAULT(0),
+		LastSingletonLookupCount bigint             NOT NULL
+			CONSTRAINT dfLastSingletonLookupCount   DEFAULT(0),
+		OnlineOpsSupported		 bit				NULL
+			CONSTRAINT dfOnlineOpsSupported			DEFAULT(1),
+		SkipCount                int                NOT NULL
+			CONSTRAINT dfSkipCount                  DEFAULT(0),
+		MaxSkipCount             int                NOT NULL
+			CONSTRAINT dfMaxSkipCount               DEFAULT(0),
+		MaintenanceWindowID		 int				NULL
+			CONSTRAINT dfMaintenanceWindowID		DEFAULT(1)
+			CONSTRAINT fkMaintenanceWindowID_MasterIndexCatalog_MaintenanceWindowID FOREIGN KEY REFERENCES MaintenanceWindow(MaintenanceWindowID),
+		LastScanned				 datetime			NOT NULL
+			CONSTRAINT dfLastScanned				DEFAULT('1900-01-01'),
+		LastManaged				 datetime		    NULL
+			CONSTRAINT dfLastManaged				DEFAULT('1900-01-01'),
+		LastEvaluated            datetime           NOT NULL
+			CONSTRAINT dfLastEvaluated              DEFAULT(GetDate())
+	)
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 
-CREATE TABLE dbo.MetaData (
-    LastIndexUsageScanDate   datetime           NOT NULL
-        CONSTRAINT dfLastIndexUsageScanDate     DEFAULT ('1900-01-01')
-);
-
-IF OBJECT_ID('dbo.DatabasesToSkip') IS NOT NULL
-	DROP TABLE dbo.DatabasesToSkip
-	
-CREATE TABLE dbo.DatabasesToSkip (
-	DatabaseName sysname NOT NULL
-		CONSTRAINT pkDatabasesToSkip_DBName PRIMARY KEY);
-
-IF OBJECT_ID('dbo.MasterIndexCatalog') IS NOT NULL
-	DROP TABLE dbo.MasterIndexCatalog
-
-CREATE TABLE dbo.MasterIndexCatalog (
-	ID						 bigint				NOT NULL	IDENTITY(1,1)
-		CONSTRAINT pkMasterIndexCatalog_ID		PRIMARY KEY,
-	DatabaseID				 int				NOT NULL,
-	DatabaseName			 nvarchar(255)		NOT NULL,
-	SchemaID				 int				NOT NULL,
-	SchemaName				 nvarchar(255)		NOT NULL,
-	TableID					 bigint				NOT NULL,
-	TableName				 nvarchar(255)		NOT NULL,
-	IndexID					 int				NOT NULL,
-	IndexName				 nvarchar(255)		NOT NULL,
-	PartitionNumber			 int				NOT NULL,
-	IndexFillFactor			 tinyint 			NULL
-		CONSTRAINT dfIndexFillFactor			DEFAULT(95),
-	IsDisabled				 bit				NOT NULL
-	    CONSTRAINT dfIsDisabled					DEFAULT(0),	
-	IndexPageLockAllowed	 bit				NULL
-		CONSTRAINT dfIsPageLockAllowed			DEFAULT(1),	
-	OfflineOpsAllowed		 bit				NULL
-		CONSTRAINT dfOfflineOpsAllowed			DEFAULT(0),
-    RangeScanCount           bigint             NOT NULL
-        CONSTRAINT dfRangeScanCount             DEFAULT(0),
-    SingletonLookupCount     bigint             NOT NULL
-        CONSTRAINT dfSingletonLookupCount       DEFAULT(0),
-    LastRangeScanCount       bigint             NOT NULL
-        CONSTRAINT dfLastRangeScanCount         DEFAULT(0),
-    LastSingletonLookupCount bigint             NOT NULL
-        CONSTRAINT dfLastSingletonLookupCount   DEFAULT(0),
-    OnlineOpsSupported		 bit				NULL
-        CONSTRAINT dfOnlineOpsSupported			DEFAULT(1),
-    SkipCount                int                NOT NULL
-        CONSTRAINT dfSkipCount                  DEFAULT(0),
-    MaxSkipCount             int                NOT NULL
-        CONSTRAINT dfMaxSkipCount               DEFAULT(0),
-	MaintenanceWindowID		 int				NULL
-		CONSTRAINT dfMaintenanceWindowID		DEFAULT(1)
-		CONSTRAINT fkMaintenanceWindowID_MasterIndexCatalog_MaintenanceWindowID FOREIGN KEY REFERENCES MaintenanceWindow(MaintenanceWindowID),
-	LastScanned				 datetime			NOT NULL
-		CONSTRAINT dfLastScanned				DEFAULT('1900-01-01'),
-	LastManaged				 datetime		    NULL
-		CONSTRAINT dfLastManaged				DEFAULT('1900-01-01'),
-    LastEvaluated            datetime           NOT NULL
-        CONSTRAINT dfLastEvaluated              DEFAULT(GetDate())
-)
-
-IF OBJECT_ID('dbo.MaintenanceHistory') IS NOT NULL
-	DROP TABLE dbo.MaintenanceHistory
-
-CREATE TABLE dbo.MaintenanceHistory (
-	HistoryID				bigint					NOT NULL	IDENTITY (1,1)
-		CONSTRAINT pkMaintenanceHistory_HistoryID	PRIMARY KEY,
-	MasterIndexCatalogID	bigint					NOT NULL
-		CONSTRAINT fkMasterIndexCatalogID_MasterIndexCatalog_ID FOREIGN KEY REFERENCES MasterIndexCatalog(ID),
-	Page_Count				bigint					NOT NULL,
-	Fragmentation			float					NOT NULL,
-	OperationType			varchar(25)				NOT NULL,
-	OperationStartTime		datetime				NOT NULL,
-	OperationEndTime		datetime				NOT NULL,
-	ErrorDetails			varchar(8000)			NOT NULL,
-)
-
+IF OBJECT_ID('dbo.MaintenanceHistory') IS NULL
+BEGIN
+	CREATE TABLE dbo.MaintenanceHistory (
+		HistoryID				bigint					NOT NULL	IDENTITY (1,1)
+			CONSTRAINT pkMaintenanceHistory_HistoryID	PRIMARY KEY,
+		MasterIndexCatalogID	bigint					NOT NULL
+			CONSTRAINT fkMasterIndexCatalogID_MasterIndexCatalog_ID FOREIGN KEY REFERENCES MasterIndexCatalog(ID),
+		Page_Count				bigint					NOT NULL,
+		Fragmentation			float					NOT NULL,
+		OperationType			varchar(25)				NOT NULL,
+		OperationStartTime		datetime				NOT NULL,
+		OperationEndTime		datetime				NOT NULL,
+		ErrorDetails			varchar(8000)			NOT NULL,
+	)
+END
+-- ELSE
+-- BEGIN
+--    There is no code in this block right now.  As there as been no changes to this
+--    table since release.
+-- END
 GO
 
-IF EXISTS (SELECT * FROM sys.objects WHERE name = 'upUpdateMasterIndexCatalog')
-    DROP PROCEDURE upUpdateMasterIndexCatalog
-GO
-
-CREATE PROCEDURE dbo.upUpdateMasterIndexCatalog
+CREATE OR ALTER PROCEDURE dbo.upUpdateMasterIndexCatalog
 @DefaultMainteanceWindowName VARCHAR(255) = 'No Maintenance',
 @DefaultMainteanceWindowID INT = 1
 AS
@@ -354,11 +379,7 @@ BEGIN
 END
 GO
 
-IF EXISTS (SELECT * FROM sys.objects WHERE name = 'upUpdateIndexUsageStats')
-    DROP PROCEDURE upUpdateIndexUsageStats
-GO
-
-CREATE PROCEDURE upUpdateIndexUsageStats
+CREATE OR ALTER PROCEDURE upUpdateIndexUsageStats
 AS
 BEGIN
 
@@ -411,11 +432,7 @@ BEGIN
 END
 GO
 
-IF EXISTS (SELECT * FROM sys.objects WHERE name = 'upMaintainIndexes')
-	DROP PROCEDURE upMaintainIndexes
-GO
-
-CREATE PROCEDURE [dbo].[upMaintainIndexes]
+CREATE OR ALTER PROCEDURE [dbo].[upMaintainIndexes]
 @IgnoreRangeScans BIT = 0,
 @PrintOnlyNoExecute INT = 0,
 @MAXDOPSetting INT = 4,
