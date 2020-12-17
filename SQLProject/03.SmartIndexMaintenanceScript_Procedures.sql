@@ -441,7 +441,7 @@ BEGIN
 
 					IF (@EstOpEndTime > @MWEndTime)
 						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-						SELECT MIC.ID, @PageCount, @FragmentationLevel, 'Warning', @OpStartTime, @OpEndTime, 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
+						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
 						 FROM dbo.MasterIndexCatalog MIC
 						WHERE MIC.DatabaseID = @DatabaseID
 							AND MIC.TableID = @TableID
