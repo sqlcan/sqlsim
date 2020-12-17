@@ -125,6 +125,63 @@ BEGIN
 		VALUES ('No Maintenance','0:00','0:00','None'),
 				('HOT Tables','23:00','1:00','None'),
 				('Maintenance Window #1','1:00','1:45','None');
+
+	SET ANSI_NULLS ON
+	SET QUOTED_IDENTIFIER ON
+
+	CREATE OR ALTER TRIGGER dbo.tr_u_MaintenanceWindow 
+	   ON  dbo.MaintenanceWindow 
+	   AFTER UPDATE
+	AS 
+	BEGIN
+
+		SET NOCOUNT ON;
+
+		DECLARE @ID INT
+		DECLARE @MaintenanceWindowName NVARCHAR(255)
+		DECLARE @StartTime TIME
+		DECLARE @EndTime TIME
+		DECLARE @Weekdays VARCHAR(255)
+
+
+		SELECT @ID = MaintenanceWindowID,
+			   @MaintenanceWindowName = MaintenanceWindowName,
+			   @StartTime = MaintenanceWindowStartTime,
+			   @EndTime = MaintenanceWindowEndTime,
+			   @Weekdays = MaintenanceWindowWeekdays
+		  FROM INSERTED
+
+		IF (@ID IN (1,2) AND UPDATE (MaintenanceWindowName)) OR
+		   ((@ID = 1) AND UPDATE (MaintenanceWindowStartTime)) OR
+		   ((@ID = 1) AND UPDATE (MaintenanceWindowEndTime)) OR
+		   ((@ID = 1) AND UPDATE (MaintenanceWindowWeekdays))
+		BEGIN
+			RAISERROR ('Not allowed to update certain properties for ''No Maintenance'' and ''HOT Tables''.',1,1);
+			ROLLBACK
+		END
+	END;
+
+	CREATE OR ALTER TRIGGER dbo.tr_d_MaintenanceWindow 
+	   ON  dbo.MaintenanceWindow 
+	   AFTER DELETE
+	AS 
+	BEGIN
+
+		SET NOCOUNT ON;
+
+		DECLARE @ID INT
+
+
+		SELECT @ID = MaintenanceWindowID
+		  FROM DELETED
+
+		IF (@ID IN (1,2))
+		BEGIN
+			RAISERROR ('Not allowed to delete ''No Maintenance'' and ''HOT Tables''.',1,1);
+			ROLLBACK
+		END
+	END
+
 END
 
 
