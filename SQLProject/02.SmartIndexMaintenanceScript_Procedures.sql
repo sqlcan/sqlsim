@@ -2,6 +2,7 @@
 	History Log
 
 	2.04.00	Resolved Issue #11
+	2.04.01 Mixed bug with LOB_DATA AND ROW_OVERFLOW_DATA.
 */
 
 USE [SQLSIM]
@@ -92,7 +93,7 @@ BEGIN
 						                                            AND i.index_id = p.index_id
                          WHERE i.is_hypothetical = 0
 						   AND i.index_id >= 1
-						   AND i.type IN (1,2,3,5,6) -- Only index excluded in HEAP, SPATIAL Indexes, Memory Indexes
+						   AND i.type IN (1,2,5,6) -- Only index excluded in HEAP, SPATIAL Indexes, Memory Indexes, XML Indexes
 						   AND t.is_ms_shipped = 0
                            AND NOT EXISTS (SELECT *
                                              FROM dbo.MasterIndexCatalog MIC
@@ -437,6 +438,7 @@ BEGIN
 				
 				    SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
 				      FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,@PartitionNumber,'LIMITED')
+					 WHERE alloc_unit_type_desc = 'IN_ROW_DATA'
 
 				    SET @OpEndTime = GETDATE()
 				
