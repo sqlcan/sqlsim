@@ -1,23 +1,34 @@
+/*
+	History Log
+
+	2.04.00	Resolved Issue #11
+*/
+
 USE [SQLSIM]
 GO
 
-CREATE OR ALTER PROCEDURE dbo.upUpdateMasterIndexCatalog
-@DefaultMainteanceWindowName VARCHAR(255) = 'No Maintenance',
-@DefaultMainteanceWindowID INT = 1
+CREATE OR ALTER   PROCEDURE [dbo].[upUpdateMasterIndexCatalog]
+@DefaultMaintenanceWindowName VARCHAR(255) = 'No Maintenance',
+@DefaultMaintenanceWindowID INT = 1,
+@UpdateExistingIndexesMaintenanceWindowID BIT = 0  -- Flag is used to reset mainteance window for all existing objects. 
 AS
 BEGIN
 
-	DECLARE @DatabaseID		int
-	DECLARE @DatabaseName	nvarchar(255)
-	DECLARE @SQL			varchar(8000)
+	SET NOCOUNT ON
 
-	IF (@DefaultMainteanceWindowName <> 'No Maintenance')
-		SELECT @DefaultMainteanceWindowID = MaintenanceWindowID
+	DECLARE @DatabaseID		             int
+	DECLARE @DatabaseName	             nvarchar(255)
+	DECLARE @SQL			             varchar(8000)
+	DECLARE @NoMaintenanceWindowID       int = 1       -- This is hardcorded and expected value.  Value is protected by triggers.
+	DECLARE @HotTableMaintenanceWindowID int = 2       -- This is hardcorded and expected value.  Value is protected by triggers.
+
+	IF (@DefaultMaintenanceWindowName <> 'No Maintenance')
+		SELECT @DefaultMaintenanceWindowID = MaintenanceWindowID
 		  FROM dbo.MaintenanceWindow
-		 WHERE MaintenanceWindowName = @DefaultMainteanceWindowName
+		 WHERE MaintenanceWindowName = @DefaultMaintenanceWindowName
 
-	IF (@DefaultMainteanceWindowID IS NULL)
-		SET @DefaultMainteanceWindowID = 1
+	IF (@DefaultMaintenanceWindowID IS NULL)
+		SET @DefaultMaintenanceWindowID = 1
 
 	CREATE TABLE #DatabaseToManage
 	(DatabaseID		int,
@@ -57,6 +68,7 @@ BEGIN
     SELECT DatabaseID, 0
       FROM #DatabaseToManage
 
+	-- Step #1: Update Master Catalog Table for Index in the #DatabaseToManage list.
 	DECLARE cuDatabaeScan
 	 CURSOR LOCAL FORWARD_ONLY STATIC READ_ONLY
 	    FOR SELECT DatabaseID, DatabaseName
@@ -72,7 +84,7 @@ BEGIN
 			
 			-- Update Master Index Catalog with meta-data, new objects identified.
 			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexFillFactor, MaintenanceWindowID)
-			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor, ' + CAST(@DefaultMainteanceWindowID AS VARCHAR) + ' 
+			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor, ' + CAST(@DefaultMaintenanceWindowID AS VARCHAR) + ' 
 						  FROM [' + @DatabaseName + '].sys.schemas s
                           JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
                           JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
@@ -139,6 +151,47 @@ BEGIN
 	
 	DEALLOCATE cuDatabaeScan
 	
+	-- Step #2: Disable Maintenance on all Indexes in dbo.DatabasesToSkip Table.
+	UPDATE dbo.MasterIndexCatalog
+	   SET MaintenanceWindowID = @NoMaintenanceWindowID
+	 WHERE DatabaseName IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
+
+	-- Step #3: Enable Index Mainteance on all Indexes which are not part of dbo.DatabaseToSkip and where disable previously.
+	--          Only consider indexes where mainteance window is set to "No Maintenance".
+	--
+	--          This is a problem with approach.  Doing this will remove the user's ability to disable indexes maintenance for single indexes.
+	--          Without introducing another column this is difficult to handle.
+	-- 
+	--          - Workaround, users can create a new maintenance window "No Maintenance (User)", set the start time and end time to "0:00" and weekndays to "None".
+	--          - Assign indexes they don't wish to maintain to this mainteane window.
+
+	UPDATE dbo.MasterIndexCatalog
+	   SET MaintenanceWindowID = @DefaultMaintenanceWindowID
+	 WHERE DatabaseName NOT IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
+	   AND MaintenanceWindowID = @NoMaintenanceWindowID
+
+	-- Step #4: Overwrite Mainteance Window for Small Index 1 Page - 1000 Pages
+	;WITH LastHistoryRecord AS (
+		SELECT MasterIndexCatalogID, MAX(HistoryID) AS LastID
+		  FROM dbo.MaintenanceHistory
+	  GROUP BY MasterIndexCatalogID
+	)
+	UPDATE dbo.MasterIndexCatalog
+	   SET MaintenanceWindowID = @HotTableMaintenanceWindowID
+	 WHERE ID IN (SELECT DISTINCT MH.MasterIndexCatalogID
+	                FROM dbo.MaintenanceHistory MH
+					JOIN LastHistoryRecord LHR
+					  ON MH.MasterIndexCatalogID = LHR.MasterIndexCatalogID
+					 AND MH.HistoryID = LHR.LastID
+				   WHERE Page_Count <= 1000)
+
+	-- Step #5: Overwrite Maintenance Window for Every Index based on @UpdateExistingIndexesMaintenanceWindowID.
+	IF (@UpdateExistingIndexesMaintenanceWindowID = 1)
+	BEGIN
+		UPDATE dbo.MasterIndexCatalog
+		   SET MaintenanceWindowID = @DefaultMaintenanceWindowID
+		 WHERE MaintenanceWindowID NOT IN (@NoMaintenanceWindowID, @HotTableMaintenanceWindowID)
+	END
 END
 GO
 

@@ -80,6 +80,7 @@ A "contributor" is any person that distributes its contribution under this licen
 --                             -- 
 --                             -- If an older version exists, apply SmartIndexMaintenance_V2.02.02.sql first.
 -- 2.03.00 Resolved Issue #12.
+-- 2.04.00 Resolved Issue #11.
 --------------------------------------------------------------------------------------
 
 USE [master]
@@ -125,63 +126,6 @@ BEGIN
 		VALUES ('No Maintenance','0:00','0:00','None'),
 				('HOT Tables','23:00','1:00','None'),
 				('Maintenance Window #1','1:00','1:45','None');
-
-	SET ANSI_NULLS ON
-	SET QUOTED_IDENTIFIER ON
-
-	CREATE OR ALTER TRIGGER dbo.tr_u_MaintenanceWindow 
-	   ON  dbo.MaintenanceWindow 
-	   AFTER UPDATE
-	AS 
-	BEGIN
-
-		SET NOCOUNT ON;
-
-		DECLARE @ID INT
-		DECLARE @MaintenanceWindowName NVARCHAR(255)
-		DECLARE @StartTime TIME
-		DECLARE @EndTime TIME
-		DECLARE @Weekdays VARCHAR(255)
-
-
-		SELECT @ID = MaintenanceWindowID,
-			   @MaintenanceWindowName = MaintenanceWindowName,
-			   @StartTime = MaintenanceWindowStartTime,
-			   @EndTime = MaintenanceWindowEndTime,
-			   @Weekdays = MaintenanceWindowWeekdays
-		  FROM INSERTED
-
-		IF (@ID IN (1,2) AND UPDATE (MaintenanceWindowName)) OR
-		   ((@ID = 1) AND UPDATE (MaintenanceWindowStartTime)) OR
-		   ((@ID = 1) AND UPDATE (MaintenanceWindowEndTime)) OR
-		   ((@ID = 1) AND UPDATE (MaintenanceWindowWeekdays))
-		BEGIN
-			RAISERROR ('Not allowed to update certain properties for ''No Maintenance'' and ''HOT Tables''.',1,1);
-			ROLLBACK
-		END
-	END;
-
-	CREATE OR ALTER TRIGGER dbo.tr_d_MaintenanceWindow 
-	   ON  dbo.MaintenanceWindow 
-	   AFTER DELETE
-	AS 
-	BEGIN
-
-		SET NOCOUNT ON;
-
-		DECLARE @ID INT
-
-
-		SELECT @ID = MaintenanceWindowID
-		  FROM DELETED
-
-		IF (@ID IN (1,2))
-		BEGIN
-			RAISERROR ('Not allowed to delete ''No Maintenance'' and ''HOT Tables''.',1,1);
-			ROLLBACK
-		END
-	END
-
 END
 
 
@@ -192,11 +136,6 @@ BEGIN
 		IsLogFileFull            bit                NOT NULL
 	);
 END
--- ELSE
--- BEGIN
---    There is no code in this block right now.  As there as been no changes to this
---    table since release.
--- END
 
 IF OBJECT_ID('dbo.MetaData') IS NULL
 BEGIN
@@ -205,11 +144,6 @@ BEGIN
 			CONSTRAINT dfLastIndexUsageScanDate     DEFAULT ('1900-01-01')
 	);
 END
--- ELSE
--- BEGIN
---    There is no code in this block right now.  As there as been no changes to this
---    table since release.
--- END
 
 IF OBJECT_ID('dbo.DatabasesToSkip') IS NULL
 BEGIN	
@@ -217,11 +151,6 @@ BEGIN
 		DatabaseName sysname NOT NULL
 			CONSTRAINT pkDatabasesToSkip_DBName PRIMARY KEY);
 END
--- ELSE
--- BEGIN
---    There is no code in this block right now.  As there as been no changes to this
---    table since release.
--- END
 
 IF OBJECT_ID('dbo.MasterIndexCatalog') IS NULL
 BEGIN
@@ -270,11 +199,6 @@ BEGIN
 			CONSTRAINT dfLastEvaluated              DEFAULT(GetDate())
 	)
 END
--- ELSE
--- BEGIN
---    There is no code in this block right now.  As there as been no changes to this
---    table since release.
--- END
 
 IF OBJECT_ID('dbo.MaintenanceHistory') IS NULL
 BEGIN
@@ -291,9 +215,4 @@ BEGIN
 		ErrorDetails			varchar(8000)			NOT NULL,
 	)
 END
--- ELSE
--- BEGIN
---    There is no code in this block right now.  As there as been no changes to this
---    table since release.
--- END
 GO
