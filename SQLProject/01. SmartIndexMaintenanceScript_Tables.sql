@@ -79,6 +79,7 @@ A "contributor" is any person that distributes its contribution under this licen
 --                             -- This script contains up-to-date copy of the database.
 --                             -- 
 --                             -- If an older version exists, apply SmartIndexMaintenance_V2.02.02.sql first.
+-- 2.03.00 Resolved Issue #12.
 --------------------------------------------------------------------------------------
 
 USE [master]
