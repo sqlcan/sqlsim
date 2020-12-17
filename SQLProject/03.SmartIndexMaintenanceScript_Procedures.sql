@@ -4,6 +4,7 @@
 	2.04.00	Resolved Issue #11
 	2.04.01 Mixed bug with LOB_DATA AND ROW_OVERFLOW_DATA.
 	2.05.00 Implemented #15.
+	2.06.00 Implemented #14.
 */
 
 USE [SQLSIM]
@@ -888,6 +889,20 @@ BEGIN
 						IF (@DebugMode =1)
 							PRINT '... ... ... Checking for TLog space'
 
+						DECLARE @TLogAutoGrowthSet BIT = 0
+						DECLARE @MaxSet BIT = 0
+						DECLARE @DiskSpacePercentage FLOAT = 0
+
+						SELECT @TLogAutoGrowthSet = MAX(CASE WHEN growth = 0 THEN 0 ELSE 1 END),
+						       @MaxSet = MAX(CASE WHEN max_size = 268435456 THEN 0 ELSE 1 END)
+					      FROM sys.master_files WHERE database_id = @DatabaseID AND type_desc = 'LOG'
+
+						SELECT @DiskSpacePercentage = ((sum(total_bytes/1024./1024) - sum(available_bytes/1024./1024)) * 100)/sum(total_bytes/1024./1024)
+						  FROM sys.master_files mf
+						 CROSS APPLY sys.dm_os_volume_stats(mf.database_id,mf.file_id)
+						 WHERE mf.type_desc = 'LOG'
+						   AND mf.database_id = @DatabaseID
+
                         IF EXISTS (SELECT * FROM tempdb.sys.all_objects WHERE name LIKE '#TLogSpace%')
                             DELETE FROM #TLogSpace
                         ELSE
@@ -900,7 +915,9 @@ BEGIN
                           FROM #TLogSpace
                          WHERE DBName = db_name(@DatabaseID)
 
-                        IF (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)
+						IF (((@TLogAutoGrowthSet = 0) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
+							((@TLogAutoGrowthSet = 1) AND (@MaxSet = 1) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
+							((@TLogAutoGrowthSet = 1) AND (@MaxSet = 0) AND (@TLogAutoGrowthSet > @MaxLogSpaceUsageBeforeStop)))
                         BEGIN
 							IF (@DebugMode =1)
 								PRINT '... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'

@@ -66,9 +66,9 @@ A "contributor" is any person that distributes its contribution under this licen
 -- Developed by: Mohit K. Gupta
 --               mogupta@microsoft.com
 --
--- Last Updated: Dec. 16, 2020
+-- Last Updated: Dec. 17, 2020
 --
--- Version: 2.02
+-- Version: 2.06.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -83,6 +83,7 @@ A "contributor" is any person that distributes its contribution under this licen
 -- 2.04.00 Resolved Issue #11.
 -- 2.04.01 Resovled Issue #16.
 -- 2.05.00 Implemented #15.
+-- 2.06.00 Implemented #14.
 --------------------------------------------------------------------------------------
 
 USE [master]
