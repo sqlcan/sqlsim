@@ -3,6 +3,7 @@
 
 	2.04.00	Resolved Issue #11
 	2.04.01 Mixed bug with LOB_DATA AND ROW_OVERFLOW_DATA.
+	2.05.00 Implemented #15.
 */
 
 USE [SQLSIM]
@@ -255,7 +256,8 @@ CREATE OR ALTER PROCEDURE [dbo].[upMaintainIndexes]
 @MAXDOPSetting INT = 4,
 @LastOpTimeGap INT = 5,
 @MaxLogSpaceUsageBeforeStop FLOAT = 80,
-@LogNOOPMsgs BIT = 0,
+@LogNOOPMsgs BIT = 1, -- Defaulting 1, because setting it to 0 makes it difficult to know
+                      -- why the indexes are not maintained.
 @DebugMode BIT = 0
 AS
 BEGIN
@@ -434,6 +436,18 @@ BEGIN
 				    DECLARE @FragmentationLevel float
 				    DECLARE @PageCount			bigint
 				
+					SELECT @OpTime = dbo.svfCalculateOperationCost('FragScan',@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
+					SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
+
+					IF (@EstOpEndTime > @MWEndTime)
+						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+						SELECT MIC.ID, @PageCount, @FragmentationLevel, 'Warning', @OpStartTime, @OpEndTime, 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
+						 FROM dbo.MasterIndexCatalog MIC
+						WHERE MIC.DatabaseID = @DatabaseID
+							AND MIC.TableID = @TableID
+							AND MIC.IndexID = @IndexID
+							AND MIC.PartitionNumber = @PartitionNumber
+
 				    SET @OpStartTime = GETDATE()
 				
 				    SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
@@ -697,9 +711,6 @@ BEGIN
 					IF (@DebugMode = 1)
 						PRINT '... ... Index Op Selected: ' + @IndexOperation
 
-					DECLARE @StdDivTime FLOAT
-					DECLARE @AvgTime FLOAT
-					DECLARE @HistCount INT
 					DECLARE @PartitionCount INT
 
 					SELECT @PartitionCount = COUNT(*) 
@@ -708,105 +719,7 @@ BEGIN
 					   AND MIC.TableID = @TableID
 					   AND MIC.IndexID = @IndexID
 
-					-- Step #1: Do we have history for current object?
-					SELECT @HistCount = COUNT(*) 
-				      FROM dbo.MaintenanceHistory MH
-					  JOIN dbo.MasterIndexCatalog MIC
-						ON MH.MasterIndexCatalogID = MIC.ID
-					 WHERE MH.OperationType LIKE @IndexOperation + '%'
-					   AND MIC.DatabaseID = @DatabaseID
-					   AND MIC.TableID = @TableID
-					   AND MIC.IndexID = @IndexID
-					   AND MIC.PartitionNumber = @PartitionNumber
-
-					IF (@HistCount > 0)
-					BEGIN
-
-						IF (@DebugMode = 1)
-							PRINT '... ... Calculating operation time cost.'
-
-						-- Step #1: Calculate standard diviation to help us eliminate outliers.
-						SELECT @StdDivTime = ISNULL(STDEV(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MIC.DatabaseID = @DatabaseID
-						   AND MIC.TableID = @TableID
-						   AND MIC.IndexID = @IndexID
-						   AND MIC.PartitionNumber = @PartitionNumber
-
-						-- Step #2: Calculate the average time.
-						SELECT @AvgTime = ISNULL(AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MIC.DatabaseID = @DatabaseID
-						   AND MIC.TableID = @TableID
-						   AND MIC.IndexID = @IndexID
-						   AND MIC.PartitionNumber = @PartitionNumber
-
-						-- Step #3: Calculate the average time removing excluding outliers.
-						SELECT @AvgTime = ISNULL(AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MIC.DatabaseID = @DatabaseID
-						   AND MIC.TableID = @TableID
-						   AND MIC.IndexID = @IndexID
-						   AND MIC.PartitionNumber = @PartitionNumber
-						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) >= (@AvgTime - @StdDivTime)
-						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) <= (@AvgTime + @StdDivTime)
-
-						IF (@DebugMode = 1)
-							PRINT '... ... Cost Calculated (ms): ' + CAST(@AvgTime AS VARCHAR)
-					END
-					ELSE
-					BEGIN
-
-						IF (@DebugMode = 1)
-							PRINT '... ... New index unknown cost, calculating based on similar index sizes.'
-
-						-- Step #1: Calculate standard diviation to help us eliminate outliers.
-						SELECT @StdDivTime = ISNULL(STDEV(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
-						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
-
-						-- Step #2: Calculate the average time.
-						SELECT @AvgTime = ISNULL(AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
-						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
-
-						-- Step #3: Calculate the average time removing excluding outliers.
-						SELECT @AvgTime = ISNULL(AVG(DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime)),0)
-						  FROM dbo.MaintenanceHistory MH
-						  JOIN dbo.MasterIndexCatalog MIC
-							ON MH.MasterIndexCatalogID = MIC.ID
-						 WHERE MH.OperationType LIKE @IndexOperation + '%'
-						   AND MH.Page_Count >= @PageCount - (@PageCount * .15)
-						   AND MH.Page_Count <= @PageCount + (@PageCount * .15)
-						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) >= (@AvgTime - @StdDivTime)
-						   AND DATEDIFF(MILLISECOND,MH.OperationStartTime,MH.OperationEndTime) <= (@AvgTime + @StdDivTime)
-
-						IF (@DebugMode = 1)
-							PRINT '... ... Cost Calculated (ms): ' + CAST(@AvgTime AS VARCHAR)
-					END
-
-					IF (@AvgTime = 0)
-						SET @OpTime = @DefaultOpTime
-					Else
-						SET @OpTime = @AvgTime
-				
+					SELECT @OpTime = dbo.svfCalculateOperationCost(@IndexOperation,@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
 				    SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 				
 					IF (@DebugMode = 1)
