@@ -5,6 +5,7 @@
 	2.04.01 Mixed bug with LOB_DATA AND ROW_OVERFLOW_DATA.
 	2.05.00 Implemented #15.
 	2.06.00 Implemented #14.
+	2.06.01 Post Release Minor Bug Fixes.
 */
 
 USE [SQLSIM]
@@ -297,7 +298,9 @@ BEGIN
 	DECLARE @FFA					    int --Fill Factor Adjustment
     DECLARE @LogSpacePercentage         float
     DECLARE @ReasonForNOOP				varchar(255)
-	
+	DECLARE @OpTime						int
+	DECLARE @EstOpEndTime				datetime
+
 	SET NOCOUNT ON
 
 	IF (@DebugMode = 1)
@@ -699,8 +702,6 @@ BEGIN
 				
 				    DECLARE @IndexReorgTime		int
 				    DECLARE @IndexRebuildTime	int
-				    DECLARE @OpTime				int
-				    DECLARE @EstOpEndTime		datetime
 				 
 					-- Calculate the approx time for index operation.  This can be one of three values.
 					--

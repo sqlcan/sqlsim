@@ -84,6 +84,7 @@ A "contributor" is any person that distributes its contribution under this licen
 -- 2.04.01 Resovled Issue #16.
 -- 2.05.00 Implemented #15.
 -- 2.06.00 Implemented #14.
+-- 2.06.01 Post Release Minor Bug Fixes.
 --------------------------------------------------------------------------------------
 
 USE [master]

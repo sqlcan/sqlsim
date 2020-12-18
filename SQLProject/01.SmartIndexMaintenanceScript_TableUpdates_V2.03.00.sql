@@ -5,7 +5,14 @@
 	Purpose: Project MaintenanceWindow table to stop the user from accidently
 	         updating the Name for ID (1,2), or other propteries for ID (1).
 
+	Last Updated: Dec. 17, 2020.
+
+	* Added USE statement.
+
 */
+
+USE [SQLSIM]
+GO
 
 SET ANSI_NULLS ON
 GO

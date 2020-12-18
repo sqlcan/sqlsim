@@ -4,7 +4,15 @@
 
 	Purpose: Fix Spelling Mistake in Column Name
 
+	Updated on Dec. 17, 2020
+	* Removed Optimize For Serial Key as it is not supported in order versions.
+	* Added USE statement.
+
 */
+
+USE [SQLSIM]
+GO
+
 SELECT MaintenanceWindowID, MaintenanceWindowName, MaintenanceWindowStartTime, 
        MaintenanceWindowEndTime, MainteanceWindowWeekdays
   INTO #TmpMaintenanceWindow
@@ -24,7 +32,7 @@ CREATE TABLE [dbo].[v20102MaintenanceWindow](
  CONSTRAINT [pkMaintenanceWindow_MaintenanceWindowID] PRIMARY KEY CLUSTERED 
 (
 	[MaintenanceWindowID] ASC
-)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
 ) ON [PRIMARY]
 
 ALTER TABLE [dbo].[v20102MaintenanceWindow] ADD  CONSTRAINT [dfSTNullValue]  DEFAULT ('0:00') FOR [MaintenanceWindowStartTime]
