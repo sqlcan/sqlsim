@@ -66,9 +66,9 @@ A "contributor" is any person that distributes its contribution under this licen
 -- Developed by: Mohit K. Gupta
 --               mogupta@microsoft.com
 --
--- Last Updated: Dec. 17, 2020
+-- Last Updated: Feb. 9, 2021
 --
--- Version: 2.06.00
+-- Version: 2.12.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -85,6 +85,13 @@ A "contributor" is any person that distributes its contribution under this licen
 -- 2.05.00 Implemented #15.
 -- 2.06.00 Implemented #14.
 -- 2.06.01 Post Release Minor Bug Fixes.
+-- 2.07.00 Implemented #18.
+-- 2.12.00 Fixed various issues with @PrintOnlyNoExecute parameter. (Fixed #5).
+--         - Added date time stamp if @Debug is supplied.
+--         - Suspended TLOG Space Check when running in Print Only.
+--         - Suspended DBCC Info Messages
+--         - Removed extra white space from TSQL command.
+--         - Skip mainteance window check when running in Print Mode.
 --------------------------------------------------------------------------------------
 
 USE [master]

@@ -7,6 +7,12 @@
 	2.06.00 Implemented #14.
 	2.06.01 Post Release Minor Bug Fixes.
 	2.07.00 Implemented #18.
+    2.12.00 Fixed various issues with @PrintOnlyNoExecute parameter. (Fixed #5)
+            - Added date time stamp if @Debug is supplied.
+            - Suspended TLOG Space Check when running in Print Only.
+            - Suspended DBCC Info Messages
+            - Removed extra white space from TSQL command.
+            - Skip mainteance window check when running in Print Mode.	
 */
 
 USE [SQLSIM]
@@ -311,8 +317,10 @@ BEGIN
 
 	SET NOCOUNT ON
 
-	IF (@DebugMode = 1)
-		PRINT 'Starting Index Mainteance Script on ' + CONVERT(VARCHAR(255),GETDATE(),121)
+	IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 0)
+		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Starting Index Mainteance Script in [EXECUTE MODE]'
+	ELSE IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 1)
+		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Starting Index Mainteance Script in [PRINT ONLY MODE]'
 
 	SET @MAXDOP = @MAXDOPSetting	 -- Degree of Parallelism to use for Index Rebuilds
 
@@ -342,15 +350,17 @@ BEGIN
        WHERE MaintenanceWindowStartTime <= GETDATE() AND MaintenanceWindowEndTime >= GETDATE()
     ORDER BY MaintenanceWindowStartTime ASC
 
-	IF (@MaintenanceWindowName IS NULL)
+	IF ((@MaintenanceWindowName IS NULL) AND (@PrintOnlyNoExecute = 0))
 	BEGIN
 		IF (@DebugMode = 1)
 			PRINT 'No maintenance window found.  Stopping script on ' + CONVERT(VARCHAR(255),GETDATE(),121)
 		RETURN	
 	END
 
-	IF (@DebugMode = 1)
-		PRINT '... Running maintenance script for ' + @MaintenanceWindowName
+	IF ((@DebugMode = 1) AND (@PrintOnlyNoExecute = 0))
+		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for ' + @MaintenanceWindowName
+	ELSE IF ((@DebugMode = 1) AND (@PrintOnlyNoExecute = 0))
+		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for All OBJECTS [Mainteance Window Ignored].'
 
     -- We need to calculate the Default Op Time, the default value in V1 was 1 HOUR (60*60*1000)
     -- However this doesn't work for small maintenance windows.  Small maintenance windows
@@ -376,7 +386,7 @@ BEGIN
 	    FOR SELECT DatabaseID, DatabaseName, SchemaName, TableID, TableName, IndexID, PartitionNumber, IndexName, IndexFillFactor, OfflineOpsAllowed, LastManaged, LastScanned, LastEvaluated, SkipCount, MaxSkipCount
 	          FROM dbo.MasterIndexCatalog MIC
 	          JOIN dbo.MaintenanceWindow  MW   ON MIC.MaintenanceWindowID = MW.MaintenanceWindowID
-	         WHERE MW.MaintenanceWindowName = @MaintenanceWindowName
+	         WHERE ((MW.MaintenanceWindowName = @MaintenanceWindowName) OR (@MaintenanceWindowName IS NULL))
                AND ((MIC.RangeScanCount > 0 AND @IgnoreRangeScans = 0) OR (@IgnoreRangeScans = 1))
           ORDER BY MIC.LastManaged ASC, MIC.SkipCount ASC, RangeScanCount DESC
 	
@@ -389,7 +399,7 @@ BEGIN
 		BEGIN  -- START -- CURSOR
 
 			IF (@DebugMode = 1)
-				PRINT '... Assessing Index: ' + @DatabaseName + '.' + @SchemaName + '.' + @TableName + '(' + @IndexName + ' Partition: ' + CAST(@PartitionNumber AS VARCHAR) + ')'
+				PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... Assessing Index: ' + @DatabaseName + '.' + @SchemaName + '.' + @TableName + '(' + @IndexName + ' Partition: ' + CAST(@PartitionNumber AS VARCHAR) + ')'
 
             -- Only manage the current index if current database's tlog is not full, index skip count has been reached
             -- and there is still time in maintenance window.
@@ -399,7 +409,7 @@ BEGIN
             BEGIN -- START -- Maintain Indexes for Databases where TLog is not Full.
 
 				IF (@DebugMode = 1)
-					PRINT '... ... Evaluating Index'
+					PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Evaluating Index'
 
 			    SET @IndexOperation = 'NOOP'      --No Operation
 				SET @ReasonForNOOP = 'No Reason.' --Default value.
@@ -699,7 +709,7 @@ BEGIN
 				BEGIN -- START -- Index is disabled just record reason for NOOP
 					SET @ReasonForNOOP = 'Index disabled.'
 					IF (@DebugMode = 1)
-						PRINT '... ... Index disabled.'
+						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Index disabled.'
 				END -- END -- Index is disabled just record reason for NOOP
 				
 			    IF (@IndexOperation <> 'NOOP')
@@ -719,7 +729,7 @@ BEGIN
 					-- Object of Similar Size (+/- 15%) : Average
 
 					IF (@DebugMode = 1)
-						PRINT '... ... Index Op Selected: ' + @IndexOperation
+						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Index Op Selected: ' + @IndexOperation
 
 					DECLARE @PartitionCount INT
 
@@ -733,14 +743,14 @@ BEGIN
 				    SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 				
 					IF (@DebugMode = 1)
-						PRINT '... ... Estimated Operation Completion DateTime ' + CONVERT(VARCHAR(255),@EstOpEndTime,121)
+						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Estimated Operation Completion DateTime ' + CONVERT(VARCHAR(255),@EstOpEndTime,121)
 
 				    -- Confirm operation will complete before the Maintenance Window End Time.
 				    IF (@EstOpEndTime < @MWEndTime)
 				    BEGIN
 
 						IF (@DebugMode = 1)
-							PRINT '... ... ... Possible to maintain index.'
+							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Possible to maintain index.'
 				    
 						-- Index is being maintained so we will decrement the MaxSkipCount by 1; minimum value is 0.
 						-- Only adjust if it is actual execution.
@@ -755,9 +765,9 @@ BEGIN
 							   AND IndexID = @IndexID 
 							   AND PartitionNumber = @PartitionNumber
 					
-					    SET @SQL = 'USE [' + @DatabaseName + ']
-								    ALTER INDEX [' + @IndexName + ']
-								    ON [' + @SchemaName + '].[' + @TableName + '] '
+					    SET @SQL = 'USE [' + @DatabaseName + ']; '
+						SET @SQL = @SQL + 'ALTER INDEX [' + @IndexName + '] '
+						SET @SQL = @SQL + 'ON [' + @SchemaName + '].[' + @TableName + '] '
 					            
 					    IF (@IndexOperation = 'REORGANIZE')
 					    BEGIN
@@ -773,7 +783,7 @@ BEGIN
 							BEGIN
 
 								IF (@DebugMode = 1)
-									PRINT '... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 								IF (@IndexFillFactor = 0)
 								BEGIN
@@ -815,7 +825,7 @@ BEGIN
 								END
 								
 								IF (@DebugMode = 1)
-									PRINT '... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 								UPDATE dbo.MasterIndexCatalog
 								   SET IndexFillFactor = @IndexFillFactor
@@ -858,10 +868,10 @@ BEGIN
 						ELSE
 						BEGIN
 							IF (@DebugMode = 1)
-								PRINT '... ... ... Starting index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Starting index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 							EXEC (@SQL)
 							IF (@DebugMode = 1)
-								PRINT '... ... ... Finished index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Finished index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 						END
 					
 					    SET @OpEndTime = GETDATE()
@@ -895,55 +905,59 @@ BEGIN
                         -- Check to make sure the transaction log file on the current database is not full.
                         -- If the transaction log file is full, we cannot maintain any more indexes for current database.
 
-						IF (@DebugMode =1)
-							PRINT '... ... ... Checking for TLog space'
-
-						DECLARE @TLogAutoGrowthSet BIT = 0
-						DECLARE @MaxSet BIT = 0
-						DECLARE @DiskSpacePercentage FLOAT = 0
-
-						SELECT @TLogAutoGrowthSet = MAX(CASE WHEN growth = 0 THEN 0 ELSE 1 END),
-						       @MaxSet = MAX(CASE WHEN max_size = 268435456 THEN 0 ELSE 1 END)
-					      FROM sys.master_files WHERE database_id = @DatabaseID AND type_desc = 'LOG'
-
-						SELECT @DiskSpacePercentage = ((sum(total_bytes/1024./1024) - sum(available_bytes/1024./1024)) * 100)/sum(total_bytes/1024./1024)
-						  FROM sys.master_files mf
-						 CROSS APPLY sys.dm_os_volume_stats(mf.database_id,mf.file_id)
-						 WHERE mf.type_desc = 'LOG'
-						   AND mf.database_id = @DatabaseID
-
-                        IF EXISTS (SELECT * FROM tempdb.sys.all_objects WHERE name LIKE '#TLogSpace%')
-                            DELETE FROM #TLogSpace
-                        ELSE
-                            CREATE TABLE #TLogSpace (DBName sysname, LogSize float, LogSpaceUsed float, LogStatus smallint)
-
-                        INSERT INTO #TLogSpace
-                        EXEC ('DBCC SQLPERF(LOGSPACE)')
-
-                        SELECT @LogSpacePercentage = LogSpaceUsed
-                          FROM #TLogSpace
-                         WHERE DBName = db_name(@DatabaseID)
-
-						IF (((@TLogAutoGrowthSet = 0) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
-							((@TLogAutoGrowthSet = 1) AND (@MaxSet = 1) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
-							((@TLogAutoGrowthSet = 1) AND (@MaxSet = 0) AND (@TLogAutoGrowthSet > @MaxLogSpaceUsageBeforeStop)))
-                        BEGIN
+						IF (@PrintOnlyNoExecute = 0)
+						BEGIN
 							IF (@DebugMode =1)
-								PRINT '... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'
+								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Checking for TLog space'
 
-						    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-						    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
-						           'Database reached Max Log Space Usage limit, therefore no further indexes will be maintained in this maintenance window current database.'
-                              FROM dbo.MasterIndexCatalog MIC
-					         WHERE MIC.DatabaseID = @DatabaseID
-					           AND MIC.TableID = @TableID
-					           AND MIC.IndexID = @IndexID 
-							   AND MIC.PartitionNumber = @PartitionNumber
+							DECLARE @TLogAutoGrowthSet BIT = 0
+							DECLARE @MaxSet BIT = 0
+							DECLARE @DiskSpacePercentage FLOAT = 0
+							SET @LogSpacePercentage = 0
 
-                            UPDATE dbo.DatabaseStatus
-                               SET IsLogFileFull = 1
-                             WHERE DatabaseID = @DatabaseID
-                        END
+							SELECT @TLogAutoGrowthSet = MAX(CASE WHEN growth = 0 THEN 0 ELSE 1 END),
+								   @MaxSet = MAX(CASE WHEN max_size = 268435456 THEN 0 ELSE 1 END)
+							  FROM sys.master_files WHERE database_id = @DatabaseID AND type_desc = 'LOG'
+
+							SELECT @DiskSpacePercentage = ((sum(total_bytes/1024./1024) - sum(available_bytes/1024./1024)) * 100)/sum(total_bytes/1024./1024)
+							  FROM sys.master_files mf
+							 CROSS APPLY sys.dm_os_volume_stats(mf.database_id,mf.file_id)
+							 WHERE mf.type_desc = 'LOG'
+							   AND mf.database_id = @DatabaseID
+
+							IF EXISTS (SELECT * FROM tempdb.sys.all_objects WHERE name LIKE '#TLogSpace%')
+								DELETE FROM #TLogSpace
+							ELSE
+								CREATE TABLE #TLogSpace (DBName sysname, LogSize float, LogSpaceUsed float, LogStatus smallint)
+
+							INSERT INTO #TLogSpace
+							EXEC ('DBCC SQLPERF(LOGSPACE) WITH NO_INFOMSGS')
+
+							SELECT @LogSpacePercentage = LogSpaceUsed
+							  FROM #TLogSpace
+							 WHERE DBName = db_name(@DatabaseID)						
+						
+							IF (((@TLogAutoGrowthSet = 0) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
+								((@TLogAutoGrowthSet = 1) AND (@MaxSet = 1) AND (@LogSpacePercentage > @MaxLogSpaceUsageBeforeStop)) OR
+								((@TLogAutoGrowthSet = 1) AND (@MaxSet = 0) AND (@TLogAutoGrowthSet > @MaxLogSpaceUsageBeforeStop)))
+							BEGIN
+								IF (@DebugMode =1)
+									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'
+
+								INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+								SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
+									   'Database reached Max Log Space Usage limit, therefore no further indexes will be maintained in this maintenance window current database.'
+								  FROM dbo.MasterIndexCatalog MIC
+								 WHERE MIC.DatabaseID = @DatabaseID
+								   AND MIC.TableID = @TableID
+								   AND MIC.IndexID = @IndexID 
+								   AND MIC.PartitionNumber = @PartitionNumber
+
+								UPDATE dbo.DatabaseStatus
+								   SET IsLogFileFull = 1
+								 WHERE DatabaseID = @DatabaseID
+							END
+						END
 
 				    END
 				    ELSE
@@ -1003,7 +1017,7 @@ BEGIN
 					BEGIN -- START -- No Operation for current index and it is not disabled
 					
 						IF (@DebugMode = 1)
-							PRINT '... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 						IF (@IndexFillFactor = 0)
 						BEGIN
@@ -1027,7 +1041,7 @@ BEGIN
 							SET @IndexFillFactor = 99
 							
 						IF (@DebugMode = 1)
-							PRINT '... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 						UPDATE dbo.MasterIndexCatalog
 						   SET IndexFillFactor = @IndexFillFactor,
@@ -1061,7 +1075,7 @@ BEGIN
             BEGIN -- START -- Either TLog is Full or Skip Count has not reached Max Skip Count or We are out of time!
 
 				IF (@DebugMode = 1)
-					PRINT '... ... Skipping Index - Index Skipped or Mainteance Window Reached or TLog Full'
+					PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Skipping Index - Index Skipped or Mainteance Window Reached or TLog Full'
 
                 -- There is no operation to execute if database TLog is full.  However if 
                 -- skip count has not been reached.  We must increment Skip Count for next time.
@@ -1081,7 +1095,7 @@ BEGIN
 						BEGIN
 
 							IF (@DebugMode = 1)
-								PRINT '... ... Increasing skip count.'
+								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Increasing skip count.'
 
 							UPDATE dbo.MasterIndexCatalog
 							   SET SkipCount = @SkipCount + DATEDIFF(DAY,@LastEvaluated,GetDate()),
@@ -1100,7 +1114,7 @@ BEGIN
                         (DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
                     BEGIN -- START -- Database T-Log Is Not Full But We Are Out Of Time
 						IF (@DebugMode = 1)
-								PRINT '... ... Reached end of mainteance window.'
+								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Reached end of mainteance window.'
                         GOTO TheEnd
                     END -- END -- Database T-Log Is Not Full But We Are Out Of Time
                 END
@@ -1118,7 +1132,7 @@ BEGIN
 
 TheEnd:
 IF (@DebugMode = 1)
-	PRINT 'Finishing index mainteance at ' + CONVERT(VARCHAR(255),GETDATE(),121)
+	PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Finishing index mainteance operation.'
 
 END
 GO
