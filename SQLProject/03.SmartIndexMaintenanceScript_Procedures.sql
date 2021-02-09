@@ -6,6 +6,7 @@
 	2.05.00 Implemented #15.
 	2.06.00 Implemented #14.
 	2.06.01 Post Release Minor Bug Fixes.
+	2.07.00 Implemented #18.
 */
 
 USE [SQLSIM]
@@ -38,6 +39,27 @@ BEGIN
 	(DatabaseID		int,
      DatabaseName	nvarchar(255));
 
+	CREATE TABLE #DatabasesToSkip
+	(DatabaseName sysname);
+
+	-- Copying the database skip table, as additional databases might be added to this table
+	-- based on additional rules.  We do not want to overwrite user DatabasesToSkip table.
+	INSERT INTO #DatabasesToSkip
+	SELECT DatabaseName
+	  FROM dbo.DatabasesToSkip
+
+	-- Rule #1: Skip all databases that are SECONDARY on current AG replica.
+	INSERT INTO #DatabasesToSkip
+	SELECT d.name
+	  FROM sys.databases d
+      JOIN sys.dm_hadr_availability_replica_states rs ON d.replica_id = rs.replica_id
+      JOIN sys.availability_groups ag ON rs.group_id = ag.group_id
+     WHERE rs.role_desc = 'SECONDARY'
+
+	-- Rule #2: Skip all databases that are SECONDARY on current database mirroring topology.
+	INSERT INTO #DatabasesToSkip
+	SELECT db_name(database_id) FRom sys.database_mirroring WHERE mirroring_role = 2
+
 	-- Only select user database databases that are online and writable.
 	--
 	-- Only database that are in DatabasesToManage -- Controlled by DBA Team --
@@ -50,21 +72,7 @@ BEGIN
 	        AND state = 0			-- ONLINE
 	        AND is_read_only = 0    -- READ_WRITE
 			AND is_in_standby = 0   -- Log Shipping Standby
-			AND name NOT IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
-
-	-- Remove databses from list that are part of AG but not primary replica.
-	DELETE
-	  FROM #DatabaseToManage
-	 WHERE DatabaseName IN (    SELECT d.name
-                                  FROM sys.databases d
-                            INNER JOIN sys.dm_hadr_availability_replica_states rs ON d.replica_id = rs.replica_id
-                            INNER JOIN sys.availability_groups ag ON rs.group_id = ag.group_id
-                                 WHERE rs.role_desc = 'SECONDARY')
-
-	-- Remove databases that are Mirror partner --
-	DELETE
-	  FROM #DatabaseToManage
-	 WHERE DatabaseName IN (SELECT db_name(database_id) FRom sys.database_mirroring WHERE mirroring_role = 2)
+			AND name NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
 
 	-- Table used to track current state of tlog space.  Once TLog has reached capacity setting.
     DELETE FROM dbo.DatabaseStatus
