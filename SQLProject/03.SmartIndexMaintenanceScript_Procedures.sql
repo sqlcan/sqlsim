@@ -22,6 +22,7 @@
 			Fixed multiple spelling mistakes in output.
     2.16.00 Updated how reporting is completed for current activity.
 			Introduced new view to summarize master catalog with last operation details.
+	2.17.00 Updated logic for how mainteance windows are assigned (Issue #21).
 */
 
 USE [SQLSIM]
@@ -30,7 +31,7 @@ GO
 CREATE OR ALTER   PROCEDURE [dbo].[upUpdateMasterIndexCatalog]
 @DefaultMaintenanceWindowName VARCHAR(255) = 'No Maintenance',
 @DefaultMaintenanceWindowID INT = 1,
-@UpdateExistingIndexesMaintenanceWindowID BIT = 0  -- Flag is used to reset Maintenance window for all existing objects. 
+@DisableMaintenanceOnUserExclusions BIT = 0 
 AS
 BEGIN
 
@@ -55,17 +56,18 @@ BEGIN
      DatabaseName	nvarchar(255));
 
 	CREATE TABLE #DatabasesToSkip
-	(DatabaseName sysname);
+	(DatabaseName  sysname,
+	 UserExclusion bit);
 
 	-- Copying the database skip table, as additional databases might be added to this table
 	-- based on additional rules.  We do not want to overwrite user DatabasesToSkip table.
 	INSERT INTO #DatabasesToSkip
-	SELECT DatabaseName
+	SELECT DatabaseName, 1
 	  FROM dbo.DatabasesToSkip
 
 	-- Rule #1: Skip all databases that are SECONDARY on current AG replica.
 	INSERT INTO #DatabasesToSkip
-	SELECT d.name
+	SELECT d.name, 0
 	  FROM sys.databases d
       JOIN sys.dm_hadr_availability_replica_states rs ON d.replica_id = rs.replica_id
       JOIN sys.availability_groups ag ON rs.group_id = ag.group_id
@@ -73,11 +75,11 @@ BEGIN
 
 	-- Rule #2: Skip all databases that are SECONDARY on current database mirroring topology.
 	INSERT INTO #DatabasesToSkip
-	SELECT db_name(database_id) FRom sys.database_mirroring WHERE mirroring_role = 2
+	SELECT db_name(database_id), 0 FRom sys.database_mirroring WHERE mirroring_role = 2
 
 	-- Rule #3: Skip databases that are not writeable.
 	INSERT INTO #DatabasesToSkip
-	     SELECT name
+	     SELECT name, 0
 	       FROM sys.databases
 	      WHERE database_id > 4
 			AND (user_access <> 0     -- MULTI_USER
@@ -97,8 +99,10 @@ BEGIN
 	-- Table used to track current state of tlog space.  Once TLog has reached capacity setting.
     DELETE FROM dbo.DatabaseStatus
     INSERT INTO dbo.DatabaseStatus
-    SELECT DatabaseID, 0
-      FROM #DatabaseToManage
+	SELECT database_id, 0
+	  FROM sys.databases
+	 WHERE database_id > 4
+	   AND name NOT IN (SELECT DatabaseName FROM #DatabasesToSkip WHERE UserExclusion = 0) 
 
 	-- Step #1: Update Master Catalog Table for Index in the #DatabaseToManage list.
 	DECLARE cuDatabaeScan
@@ -183,26 +187,11 @@ BEGIN
 	
 	DEALLOCATE cuDatabaeScan
 	
-	-- Step #2: Disable Maintenance on all Indexes in #DatabasesToSkip Table.
-	UPDATE dbo.MasterIndexCatalog
-	   SET MaintenanceWindowID = @NoMaintenanceWindowID
-	 WHERE DatabaseName IN (SELECT DatabaseName FROM #DatabasesToSkip)
-
-	-- Step #3: Enable Index Maintenance on all Indexes which are not part of dbo.DatabaseToSkip and where disable previously.
-	--          Only consider indexes where Maintenance window is set to "No Maintenance".
-	--
-	--          This is a problem with approach.  Doing this will remove the user's ability to disable indexes maintenance for single indexes.
-	--          Without introducing another column this is difficult to handle.
-	-- 
-	--          - Workaround, users can create a new maintenance window "No Maintenance (User)", set the start time and end time to "0:00" and weekndays to "None".
-	--          - Assign indexes they don't wish to maintain to this mainteane window.
-
+	-- Step #2: Update Maintenance Window ID to value supplied for all indexes.
 	UPDATE dbo.MasterIndexCatalog
 	   SET MaintenanceWindowID = @DefaultMaintenanceWindowID
-	 WHERE DatabaseName NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
-	   AND MaintenanceWindowID = @NoMaintenanceWindowID
 
-	-- Step #4: Overwrite Maintenance Window for Small Index 1 Page - 1000 Pages
+	-- Step #3: Overwrite Mainteance Window for Small Index 1 Page - 1000 Pages
 	;WITH LastHistoryRecord AS (
 		SELECT MasterIndexCatalogID, MAX(HistoryID) AS LastID
 		  FROM dbo.MaintenanceHistory
@@ -216,15 +205,24 @@ BEGIN
 					  ON MH.MasterIndexCatalogID = LHR.MasterIndexCatalogID
 					 AND MH.HistoryID = LHR.LastID
 				   WHERE Page_Count <= 1000)
-	   AND DatabaseName NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
 
-	-- Step #5: Overwrite Maintenance Window for Every Index based on @UpdateExistingIndexesMaintenanceWindowID.
-	IF (@UpdateExistingIndexesMaintenanceWindowID = 1)
-	BEGIN
+	-- Step #4: Disable Index Mainteance on all databases that are in DatabasesToSkip by identified by 
+	--          discovery process (AG Secondary, DBM Parnter, Database Inaccessible (Read-Only, Offline, etc.))
+	UPDATE dbo.MasterIndexCatalog
+	   SET MaintenanceWindowID = @NoMaintenanceWindowID
+	 WHERE DatabaseName IN (SELECT DatabaseName FROM #DatabasesToSkip WHERE UserExclusion = 0)
+
+	-- Step #5: Remove mainteance on databases in databases to skip table, if user intends to stop mainteance
+	--          on these databases.  If this parameter is not supplied, assumption is mainteance is to be
+	--          continuned as per the previous maintenance window settings. 
+	--
+	--          This will allow user to define different maintenance window for different databases by 
+	--          changing the values in DatabasesToSkip table.
+	IF (@DisableMaintenanceOnUserExclusions  = 1)
 		UPDATE dbo.MasterIndexCatalog
-		   SET MaintenanceWindowID = @DefaultMaintenanceWindowID
-		 WHERE MaintenanceWindowID NOT IN (@NoMaintenanceWindowID, @HotTableMaintenanceWindowID)
-	END
+		   SET MaintenanceWindowID = @NoMaintenanceWindowID
+		 WHERE DatabaseName IN (SELECT DatabaseName FROM #DatabasesToSkip WHERE UserExclusion = 1)
+
 END
 GO
 
