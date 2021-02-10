@@ -68,7 +68,7 @@ A "contributor" is any person that distributes its contribution under this licen
 --
 -- Last Updated: Feb. 9, 2021
 --
--- Version: 2.15.00
+-- Version: 2.16.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -99,6 +99,8 @@ A "contributor" is any person that distributes its contribution under this licen
 --		   Fixed MWEndTime calculation.
 --		   Added additional detail for information messsages.
 --		   Fixed multiple spelling mitakes in output.
+-- 2.16.00 Updated how reporting is completed for current activity.
+--	       Introduced new view to summarize master catalog with last operation details.
 --------------------------------------------------------------------------------------
 
 USE [master]

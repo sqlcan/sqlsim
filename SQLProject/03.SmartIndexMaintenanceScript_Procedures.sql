@@ -19,7 +19,9 @@
 	2.15.00	Fixed format bug issues with PRINT.
 			Fixed MWEndTime calculation.
 			Added additional detail for information messsages.
-			Fixed multiple spelling mitakes in output.
+			Fixed multiple spelling mistakes in output.
+    2.16.00 Updated how reporting is completed for current activity.
+			Introduced new view to summarize master catalog with last operation details.
 */
 
 USE [SQLSIM]
@@ -327,13 +329,14 @@ BEGIN
     DECLARE @ReasonForNOOP				varchar(255)
 	DECLARE @OpTime						int
 	DECLARE @EstOpEndTime				datetime
+	DECLARE @IdentityValue				INT
 
 	SET NOCOUNT ON
 
-	IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 0)
-		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Maintenance Script in [EXECUTE MODE]'
-	ELSE IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 1)
-		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Maintenance Script in [PRINT ONLY MODE]'
+	IF (@PrintOnlyNoExecute = 0)
+		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Mainteance Script in [EXECUTE MODE]'
+	ELSE IF (@PrintOnlyNoExecute = 1)
+		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Mainteance Script in [PRINT ONLY MODE]'
 
 	SET @MAXDOP = @MAXDOPSetting	 -- Degree of Parallelism to use for Index Rebuilds
 
@@ -375,7 +378,7 @@ BEGIN
 	ELSE IF (@PrintOnlyNoExecute = 1)
 	BEGIN
 		IF (@DebugMode = 1)
-			PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + '... Running maintenance script for All OBJECTS [Maintenance Window Ignored].'
+			PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + '... Running maintenance script for All OBJECTS [Mainteance Window Ignored].'
 		SET @MWStartTime = GETDATE()
 		SET @MWEndTime = DATEADD(HOUR,4,@MWStartTime)
 		SET @MaintenanceWindowName = 'PRINTONLY'
@@ -484,7 +487,7 @@ BEGIN
 
 					IF ((@EstOpEndTime > @MWEndTime) AND (@PrintOnlyNoExecute = 0))
 						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside Maintenance window constraint.'
+						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
 						 FROM dbo.MasterIndexCatalog MIC
 						WHERE MIC.DatabaseID = @DatabaseID
 							AND MIC.TableID = @TableID
@@ -492,20 +495,29 @@ BEGIN
 							AND MIC.PartitionNumber = @PartitionNumber
 
 				    SET @OpStartTime = GETDATE()
+
+                    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+                    SELECT MIC.ID, 0, 0, 'FragScan', @OpStartTime, '1900-01-01 00:00:00', 'Index fragmentation started.'
+                     FROM dbo.MasterIndexCatalog MIC
+                    WHERE MIC.DatabaseID = @DatabaseID
+                        AND MIC.TableID = @TableID
+                        AND MIC.IndexID = @IndexID
+						AND MIC.PartitionNumber = @PartitionNumber
 				
+					SET @IdentityValue = @@IDENTITY
+
 				    SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
 				      FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,@PartitionNumber,'LIMITED')
 					 WHERE alloc_unit_type_desc = 'IN_ROW_DATA'
 
 				    SET @OpEndTime = GETDATE()
 				
-                    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-                    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'FragScan', @OpStartTime, @OpEndTime, 'Index fragmentation scan completed.'
-                     FROM dbo.MasterIndexCatalog MIC
-                    WHERE MIC.DatabaseID = @DatabaseID
-                        AND MIC.TableID = @TableID
-                        AND MIC.IndexID = @IndexID
-						AND MIC.PartitionNumber = @PartitionNumber
+                    UPDATE dbo.MaintenanceHistory 
+					   SET OperationEndTime = @OpEndTime,
+					       ErrorDetails = 'Index fragmentation scan completed.',
+						   Fragmentation = @FragmentationLevel,
+						   Page_Count = @PageCount
+					 WHERE HistoryID = @IdentityValue
 
 					IF (@PrintOnlyNoExecute = 0)
 						UPDATE dbo.MasterIndexCatalog
@@ -750,7 +762,7 @@ BEGIN
 					-- Calculate the approx time for index operation.  This can be one of three values.
 					--
 					-- Chosing the largest of the three.
-					-- Default Value : Maintenance Window Size / 10.
+					-- Default Value : Mainteance Window Size / 10.
 					-- Previous Operation History : Average
 					-- Object of Similar Size (+/- 15%) : Average
 
@@ -887,16 +899,39 @@ BEGIN
 					    END
 					
 					    SET @OpStartTime = GETDATE()
-					
-						IF (@PrintOnlyNoExecute = 1)
+
+						-- Only Log if actual execution.
+						IF (@PrintOnlyNoExecute = 0)
+						BEGIN
+							INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+							SELECT MIC.ID,
+								   @PageCount,
+								   @FragmentationLevel,
+								   CASE WHEN @RebuildOnline = 1 THEN
+									  @IndexOperation + ' (ONLINE)'
+								   ELSE
+									  @IndexOperation + ' (OFFLINE)'
+								   END, @OpStartTime, '1900-01-01 00:00:00','Executing (' + @SQL + ').'
+							  FROM dbo.MasterIndexCatalog MIC
+							 WHERE MIC.DatabaseID = @DatabaseID
+							   AND MIC.TableID = @TableID
+							   AND MIC.IndexID = @IndexID 
+							   AND MIC.PartitionNumber = @PartitionNumber
+
+							SET @IdentityValue = @@IDENTITY
+						END
+							   
+						IF ((@PrintOnlyNoExecute = 1) AND (@DebugMode = 0))
 							Print @SQL
+						ELSE IF ((@PrintOnlyNoExecute = 1) AND (@DebugMode = 1))
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... ' + @SQL
 						ELSE
 						BEGIN
 							IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Starting index Maintenance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Starting index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 							EXEC (@SQL)
 							IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Finished index Maintenance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Finished index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 						END
 					
 					    SET @OpEndTime = GETDATE()
@@ -912,21 +947,11 @@ BEGIN
 				
 						-- Only Log if actual execution.
 						IF (@PrintOnlyNoExecute = 0)
-							INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-							SELECT MIC.ID,
-								   @PageCount,
-								   @FragmentationLevel,
-								   CASE WHEN @RebuildOnline = 1 THEN
-									  @IndexOperation + ' (ONLINE)'
-								   ELSE
-									  @IndexOperation + ' (OFFLINE)'
-								   END, @OpStartTime, @OpEndTime,'Completed. Command executed (' + @SQL + ')'
-							  FROM dbo.MasterIndexCatalog MIC
-							 WHERE MIC.DatabaseID = @DatabaseID
-							   AND MIC.TableID = @TableID
-							   AND MIC.IndexID = @IndexID 
-							   AND MIC.PartitionNumber = @PartitionNumber
-				
+							UPDATE dbo.MaintenanceHistory
+							   SET OperationEndTime = @OpEndTime,
+								   ErrorDetails = 'Completed. Command executed (' + @SQL + ')'
+							 WHERE HistoryID = @IdentityValue
+
                         -- Check to make sure the transaction log file on the current database is not full.
                         -- If the transaction log file is full, we cannot maintain any more indexes for current database.
 
@@ -991,10 +1016,10 @@ BEGIN
 					    IF (@LastManaged < DATEADD(DAY,-14,GETDATE()))
 					    BEGIN
 
-                            -- If we have not been able to maintain this index due to estimated Maintenance cost
+                            -- If we have not been able to maintain this index due to estimated mainteance cost
 							-- based on statistics analysis above, we should flag this for the dba team.
 							--
-							-- This means this index is too large to maintain for current Maintenance windows defined.
+							-- This means this index is too large to maintain for current mainteance windows defined.
 							-- Team should look at creating a larger window for this index.
 										
 						    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
@@ -1024,7 +1049,7 @@ BEGIN
 					
 					    SET @EstOpEndTime = DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())
 					
-					    -- We have reached the end of Maintenance window therefore
+					    -- We have reached the end of mainteance window therefore
 					    -- we do not want to maintain any additional indexes.
 					    IF (@EstOpEndTime > @MWEndTime)
 						    RETURN
@@ -1111,7 +1136,7 @@ BEGIN
 						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - Max Skip Count not reached (' + CAST(@SkipCount AS VARCHAR) + '/' + CAST(@MaxSkipCount AS VARCHAR) + ')'
 
 					IF ((DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
-						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - Maintenance Window End Time Reached'
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - Mainteance Window End Time Reached'
 				END
 
                 -- There is no operation to execute if database TLog is full.  However if 
@@ -1149,9 +1174,9 @@ BEGIN
                 BEGIN
                     IF ((NOT EXISTS (SELECT * FROM dbo.DatabaseStatus WHERE DatabaseID = @DatabaseID AND IsLogFileFull = 1)) AND
                         (DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
-                    BEGIN -- START -- Database T-Log Is Not Full But We Are Out Of Time
+                    BEGIN -- START -- Database T-Log Is Not Full But We Are Out Of Time	
 						IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Reached end of Maintenance window.'
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Reached end of mainteance window.'
                         GOTO TheEnd
                     END -- END -- Database T-Log Is Not Full But We Are Out Of Time
                 END
@@ -1168,8 +1193,7 @@ BEGIN
 	-- End of Stored Procedure
 
 TheEnd:
-IF (@DebugMode = 1)
-	PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Finishing index Maintenance operation.'
+PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Finishing index mainteance operation.'
 
 END
 GO
