@@ -13,6 +13,10 @@
             - Suspended DBCC Info Messages
             - Removed extra white space from TSQL command.
             - Skip mainteance window check when running in Print Mode.	
+	2.14.00	Fixed white space issue with TSQL Command.
+			Ignoring maintenance window led to another bug where no indexes were evaluated.
+			Fixed number of issues with MasterIndexCatalog update.
+
 */
 
 USE [SQLSIM]
@@ -66,6 +70,15 @@ BEGIN
 	INSERT INTO #DatabasesToSkip
 	SELECT db_name(database_id) FRom sys.database_mirroring WHERE mirroring_role = 2
 
+	-- Rule #3: Skip databases that are not writeable.
+	INSERT INTO #DatabasesToSkip
+	     SELECT name
+	       FROM sys.databases
+	      WHERE database_id > 4
+			AND (user_access <> 0     -- MULTI_USER
+	        OR state <> 0			-- ONLINE
+	        OR is_read_only <> 0    -- READ_WRITE
+			OR is_in_standby <> 0)   -- Log Shipping Standby
 	-- Only select user database databases that are online and writable.
 	--
 	-- Only database that are in DatabasesToManage -- Controlled by DBA Team --
@@ -74,11 +87,7 @@ BEGIN
 		 SELECT database_id, name
 	       FROM sys.databases
 	      WHERE database_id > 4
-			AND user_access = 0     -- MULTI_USER
-	        AND state = 0			-- ONLINE
-	        AND is_read_only = 0    -- READ_WRITE
-			AND is_in_standby = 0   -- Log Shipping Standby
-			AND name NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
+			AND name NOT IN (SELECT DatabaseName FROM #DatabasesToSkip) 
 
 	-- Table used to track current state of tlog space.  Once TLog has reached capacity setting.
     DELETE FROM dbo.DatabaseStatus
@@ -169,10 +178,10 @@ BEGIN
 	
 	DEALLOCATE cuDatabaeScan
 	
-	-- Step #2: Disable Maintenance on all Indexes in dbo.DatabasesToSkip Table.
+	-- Step #2: Disable Maintenance on all Indexes in #DatabasesToSkip Table.
 	UPDATE dbo.MasterIndexCatalog
 	   SET MaintenanceWindowID = @NoMaintenanceWindowID
-	 WHERE DatabaseName IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
+	 WHERE DatabaseName IN (SELECT DatabaseName FROM #DatabasesToSkip)
 
 	-- Step #3: Enable Index Mainteance on all Indexes which are not part of dbo.DatabaseToSkip and where disable previously.
 	--          Only consider indexes where mainteance window is set to "No Maintenance".
@@ -185,7 +194,7 @@ BEGIN
 
 	UPDATE dbo.MasterIndexCatalog
 	   SET MaintenanceWindowID = @DefaultMaintenanceWindowID
-	 WHERE DatabaseName NOT IN (SELECT DatabaseName FROM dbo.DatabasesToSkip)
+	 WHERE DatabaseName NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
 	   AND MaintenanceWindowID = @NoMaintenanceWindowID
 
 	-- Step #4: Overwrite Mainteance Window for Small Index 1 Page - 1000 Pages
@@ -202,6 +211,7 @@ BEGIN
 					  ON MH.MasterIndexCatalogID = LHR.MasterIndexCatalogID
 					 AND MH.HistoryID = LHR.LastID
 				   WHERE Page_Count <= 1000)
+	   AND DatabaseName NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
 
 	-- Step #5: Overwrite Maintenance Window for Every Index based on @UpdateExistingIndexesMaintenanceWindowID.
 	IF (@UpdateExistingIndexesMaintenanceWindowID = 1)
@@ -359,8 +369,14 @@ BEGIN
 
 	IF ((@DebugMode = 1) AND (@PrintOnlyNoExecute = 0))
 		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for ' + @MaintenanceWindowName
-	ELSE IF ((@DebugMode = 1) AND (@PrintOnlyNoExecute = 0))
-		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for All OBJECTS [Mainteance Window Ignored].'
+	ELSE IF (@PrintOnlyNoExecute = 1)
+	BEGIN
+		IF (@DebugMode = 1)
+			PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for All OBJECTS [Mainteance Window Ignored].'
+		SET @MWStartTime = GETDATE()
+		SET @MWEndTime = DATEADD(HOUR,4,@MWEndTime)
+		SET @MaintenanceWindowName = 'PRINTONLY'
+	END
 
     -- We need to calculate the Default Op Time, the default value in V1 was 1 HOUR (60*60*1000)
     -- However this doesn't work for small maintenance windows.  Small maintenance windows
@@ -386,7 +402,7 @@ BEGIN
 	    FOR SELECT DatabaseID, DatabaseName, SchemaName, TableID, TableName, IndexID, PartitionNumber, IndexName, IndexFillFactor, OfflineOpsAllowed, LastManaged, LastScanned, LastEvaluated, SkipCount, MaxSkipCount
 	          FROM dbo.MasterIndexCatalog MIC
 	          JOIN dbo.MaintenanceWindow  MW   ON MIC.MaintenanceWindowID = MW.MaintenanceWindowID
-	         WHERE ((MW.MaintenanceWindowName = @MaintenanceWindowName) OR (@MaintenanceWindowName IS NULL))
+	         WHERE ((MW.MaintenanceWindowName = @MaintenanceWindowName) OR ((@MaintenanceWindowName = 'PRINTONLY') AND (MW.MaintenanceWindowID > 1)))
                AND ((MIC.RangeScanCount > 0 AND @IgnoreRangeScans = 0) OR (@IgnoreRangeScans = 1))
           ORDER BY MIC.LastManaged ASC, MIC.SkipCount ASC, RangeScanCount DESC
 	
@@ -443,14 +459,16 @@ BEGIN
 			       AND MIC.IndexID = @IndexID
 				   AND MIC.PartitionNumber = @PartitionNumber
 
-                -- Since it is not skipped; the skip counter is reinitialized to 0.				
-				UPDATE dbo.MasterIndexCatalog
-				   SET SkipCount = 0,
-                       LastEvaluated = GetDate()
-				 WHERE DatabaseID = @DatabaseID
-				   AND TableID = @TableID
-				   AND IndexID = @IndexID 
-				   AND PartitionNumber = @PartitionNumber
+                -- Since it is not skipped; the skip counter is reinitialized to 0.
+				-- Only adjust the skip counter if this is actual execution.
+				IF (@PrintOnlyNoExecute = 0)
+					UPDATE dbo.MasterIndexCatalog
+					   SET SkipCount = 0,
+						   LastEvaluated = GetDate()
+					 WHERE DatabaseID = @DatabaseID
+					   AND TableID = @TableID
+					   AND IndexID = @IndexID 
+					   AND PartitionNumber = @PartitionNumber
 			 
 			    IF (@IsDisabled = 0)
 			    BEGIN -- START -- Decide on Index Operation
@@ -486,12 +504,13 @@ BEGIN
                         AND MIC.IndexID = @IndexID
 						AND MIC.PartitionNumber = @PartitionNumber
 
-				    UPDATE dbo.MasterIndexCatalog
-				       SET LastScanned = @OpEndTime
-				     WHERE DatabaseID = @DatabaseID
-				       AND TableID = @TableID
-				       AND IndexID = @IndexID 
-					   AND PartitionNumber = @PartitionNumber
+					IF (@PrintOnlyNoExecute = 0)
+						UPDATE dbo.MasterIndexCatalog
+						   SET LastScanned = @OpEndTime
+						 WHERE DatabaseID = @DatabaseID
+						   AND TableID = @TableID
+						   AND IndexID = @IndexID 
+						   AND PartitionNumber = @PartitionNumber
 				
 				    -- If fragmentation level is less then 10 we do not need to look at the index
 				    -- does not matter if it is hot or other.
@@ -566,7 +585,8 @@ BEGIN
 					    -- if it should be maintained or not.  If it is HOT Table, it should be
 					    -- maintained; however if it is not HOT Table, then it will only be maintained
 					    -- if it has at least 1000 pages.
-					    IF ((@MaintenanceWindowName = 'HOT Tables') OR
+					    IF ((@MaintenanceWindowName = 'PRINTONLY') OR
+						    (@MaintenanceWindowName = 'HOT Tables') OR
 				            ((@MaintenanceWindowName <> 'HOT Tables') AND (@PageCount >= 1000)))
 					    BEGIN
 					
@@ -841,8 +861,7 @@ BEGIN
 							IF (@PartitionCount > 1)
 								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
 
-							SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', 
-									            SORT_IN_TEMPDB = ON,'
+							SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
 
 
 						    IF (@RebuildOnline = 1)
@@ -986,13 +1005,16 @@ BEGIN
                         -- i.e. if this index was to be maintained based on previous history it would go past the
                         -- maintenance window threshold.  Therefore it was skipped.  However if it is maintained
                         -- at start of maintenance window it should get maintained next cycle.
+						--
+						-- Only adjust SKIP/MAXSKIP Counts if it is real maintenance.
 
-						UPDATE dbo.MasterIndexCatalog
-						   SET SkipCount = @MaxSkipCount
-						 WHERE DatabaseID = @DatabaseID
-						   AND TableID = @TableID
-						   AND IndexID = @IndexID 
-						   AND PartitionNumber = @PartitionNumber
+						IF (@PrintOnlyNoExecute = 0)
+							UPDATE dbo.MasterIndexCatalog
+							   SET SkipCount = @MaxSkipCount
+							 WHERE DatabaseID = @DatabaseID
+							   AND TableID = @TableID
+							   AND IndexID = @IndexID 
+							   AND PartitionNumber = @PartitionNumber
 					
 					    SET @EstOpEndTime = DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())
 					
@@ -1056,7 +1078,7 @@ BEGIN
 
 					END -- END -- No Operation for current index and it is not disabled
 
-					IF (@LogNOOPMsgs = 1)
+					IF ((@LogNOOPMsgs = 1) AND (@PrintOnlyNoExecute = 0))
 						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
 						SELECT MIC.ID,
 							   @PageCount,

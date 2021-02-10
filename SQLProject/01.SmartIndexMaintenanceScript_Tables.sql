@@ -68,7 +68,7 @@ A "contributor" is any person that distributes its contribution under this licen
 --
 -- Last Updated: Feb. 9, 2021
 --
--- Version: 2.12.00
+-- Version: 2.14.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -92,6 +92,9 @@ A "contributor" is any person that distributes its contribution under this licen
 --         - Suspended DBCC Info Messages
 --         - Removed extra white space from TSQL command.
 --         - Skip mainteance window check when running in Print Mode.
+-- 2.14.00 Fixed white space issue with TSQL Command.
+--		   Ignoring maintenance window led to another bug where no indexes were evaluated.
+--		   Fixed number of issues with MasterIndexCatalog update.
 --------------------------------------------------------------------------------------
 
 USE [master]
