@@ -68,7 +68,7 @@ A "contributor" is any person that distributes its contribution under this licen
 --
 -- Last Updated: Feb. 9, 2021
 --
--- Version: 2.14.00
+-- Version: 2.15.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -95,6 +95,10 @@ A "contributor" is any person that distributes its contribution under this licen
 -- 2.14.00 Fixed white space issue with TSQL Command.
 --		   Ignoring maintenance window led to another bug where no indexes were evaluated.
 --		   Fixed number of issues with MasterIndexCatalog update.
+-- 2.15.00 Fixed format bug issues with PRINT.
+--		   Fixed MWEndTime calculation.
+--		   Added additional detail for information messsages.
+--		   Fixed multiple spelling mitakes in output.
 --------------------------------------------------------------------------------------
 
 USE [master]

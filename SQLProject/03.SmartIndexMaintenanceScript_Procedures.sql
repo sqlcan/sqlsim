@@ -12,11 +12,14 @@
             - Suspended TLOG Space Check when running in Print Only.
             - Suspended DBCC Info Messages
             - Removed extra white space from TSQL command.
-            - Skip mainteance window check when running in Print Mode.	
+            - Skip Maintenance window check when running in Print Mode.	
 	2.14.00	Fixed white space issue with TSQL Command.
 			Ignoring maintenance window led to another bug where no indexes were evaluated.
 			Fixed number of issues with MasterIndexCatalog update.
-
+	2.15.00	Fixed format bug issues with PRINT.
+			Fixed MWEndTime calculation.
+			Added additional detail for information messsages.
+			Fixed multiple spelling mitakes in output.
 */
 
 USE [SQLSIM]
@@ -25,7 +28,7 @@ GO
 CREATE OR ALTER   PROCEDURE [dbo].[upUpdateMasterIndexCatalog]
 @DefaultMaintenanceWindowName VARCHAR(255) = 'No Maintenance',
 @DefaultMaintenanceWindowID INT = 1,
-@UpdateExistingIndexesMaintenanceWindowID BIT = 0  -- Flag is used to reset mainteance window for all existing objects. 
+@UpdateExistingIndexesMaintenanceWindowID BIT = 0  -- Flag is used to reset Maintenance window for all existing objects. 
 AS
 BEGIN
 
@@ -183,8 +186,8 @@ BEGIN
 	   SET MaintenanceWindowID = @NoMaintenanceWindowID
 	 WHERE DatabaseName IN (SELECT DatabaseName FROM #DatabasesToSkip)
 
-	-- Step #3: Enable Index Mainteance on all Indexes which are not part of dbo.DatabaseToSkip and where disable previously.
-	--          Only consider indexes where mainteance window is set to "No Maintenance".
+	-- Step #3: Enable Index Maintenance on all Indexes which are not part of dbo.DatabaseToSkip and where disable previously.
+	--          Only consider indexes where Maintenance window is set to "No Maintenance".
 	--
 	--          This is a problem with approach.  Doing this will remove the user's ability to disable indexes maintenance for single indexes.
 	--          Without introducing another column this is difficult to handle.
@@ -197,7 +200,7 @@ BEGIN
 	 WHERE DatabaseName NOT IN (SELECT DatabaseName FROM #DatabasesToSkip)
 	   AND MaintenanceWindowID = @NoMaintenanceWindowID
 
-	-- Step #4: Overwrite Mainteance Window for Small Index 1 Page - 1000 Pages
+	-- Step #4: Overwrite Maintenance Window for Small Index 1 Page - 1000 Pages
 	;WITH LastHistoryRecord AS (
 		SELECT MasterIndexCatalogID, MAX(HistoryID) AS LastID
 		  FROM dbo.MaintenanceHistory
@@ -328,9 +331,9 @@ BEGIN
 	SET NOCOUNT ON
 
 	IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 0)
-		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Starting Index Mainteance Script in [EXECUTE MODE]'
+		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Maintenance Script in [EXECUTE MODE]'
 	ELSE IF (@DebugMode = 1) AND (@PrintOnlyNoExecute = 1)
-		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Starting Index Mainteance Script in [PRINT ONLY MODE]'
+		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Starting Index Maintenance Script in [PRINT ONLY MODE]'
 
 	SET @MAXDOP = @MAXDOPSetting	 -- Degree of Parallelism to use for Index Rebuilds
 
@@ -368,13 +371,13 @@ BEGIN
 	END
 
 	IF ((@DebugMode = 1) AND (@PrintOnlyNoExecute = 0))
-		PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for ' + @MaintenanceWindowName
+		PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + '... Running maintenance script for ' + @MaintenanceWindowName
 	ELSE IF (@PrintOnlyNoExecute = 1)
 	BEGIN
 		IF (@DebugMode = 1)
-			PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + '... Running maintenance script for All OBJECTS [Mainteance Window Ignored].'
+			PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + '... Running maintenance script for All OBJECTS [Maintenance Window Ignored].'
 		SET @MWStartTime = GETDATE()
-		SET @MWEndTime = DATEADD(HOUR,4,@MWEndTime)
+		SET @MWEndTime = DATEADD(HOUR,4,@MWStartTime)
 		SET @MaintenanceWindowName = 'PRINTONLY'
 	END
 
@@ -396,7 +399,7 @@ BEGIN
        SET IsLogFileFull = 0
 
 	SELECT @ServerEdition = CAST(SERVERPROPERTY('EngineEdition') AS int) -- 3 = Enterprise, Developer, Enterprise Eval
-	
+
 	DECLARE cuIndexList
 	 CURSOR LOCAL FORWARD_ONLY STATIC READ_ONLY
 	    FOR SELECT DatabaseID, DatabaseName, SchemaName, TableID, TableName, IndexID, PartitionNumber, IndexName, IndexFillFactor, OfflineOpsAllowed, LastManaged, LastScanned, LastEvaluated, SkipCount, MaxSkipCount
@@ -415,7 +418,7 @@ BEGIN
 		BEGIN  -- START -- CURSOR
 
 			IF (@DebugMode = 1)
-				PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... Assessing Index: ' + @DatabaseName + '.' + @SchemaName + '.' + @TableName + '(' + @IndexName + ' Partition: ' + CAST(@PartitionNumber AS VARCHAR) + ')'
+				PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... Assessing Index: ' + @DatabaseName + '.' + @SchemaName + '.' + @TableName + '(' + @IndexName + ' Partition: ' + CAST(@PartitionNumber AS VARCHAR) + ')'
 
             -- Only manage the current index if current database's tlog is not full, index skip count has been reached
             -- and there is still time in maintenance window.
@@ -425,7 +428,7 @@ BEGIN
             BEGIN -- START -- Maintain Indexes for Databases where TLog is not Full.
 
 				IF (@DebugMode = 1)
-					PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Evaluating Index'
+					PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Evaluating Index'
 
 			    SET @IndexOperation = 'NOOP'      --No Operation
 				SET @ReasonForNOOP = 'No Reason.' --Default value.
@@ -479,9 +482,9 @@ BEGIN
 					SELECT @OpTime = dbo.svfCalculateOperationCost('FragScan',@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
 					SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 
-					IF (@EstOpEndTime > @MWEndTime)
+					IF ((@EstOpEndTime > @MWEndTime) AND (@PrintOnlyNoExecute = 0))
 						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
+						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside Maintenance window constraint.'
 						 FROM dbo.MasterIndexCatalog MIC
 						WHERE MIC.DatabaseID = @DatabaseID
 							AND MIC.TableID = @TableID
@@ -497,7 +500,7 @@ BEGIN
 				    SET @OpEndTime = GETDATE()
 				
                     INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-                    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'FragScan', @OpStartTime, @OpEndTime, 'Index fragmentation scan completed; fragmentation level.'
+                    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'FragScan', @OpStartTime, @OpEndTime, 'Index fragmentation scan completed.'
                      FROM dbo.MasterIndexCatalog MIC
                     WHERE MIC.DatabaseID = @DatabaseID
                         AND MIC.TableID = @TableID
@@ -715,13 +718,16 @@ BEGIN
 					    END
 					    ELSE
 					    BEGIN
-							SET @ReasonForNOOP = 'Small table not part of HOT maintenance window.'
+							SET @ReasonForNOOP = 'Small table (> 64KB), but not part of [HOT Tables] maintenance window.'
 						END 
 
 				    END
 				    ELSE
 				    BEGIN
-						SET @ReasonForNOOP = 'Small table (less then 64KB) or low fragmentation (less then 10%).'
+						IF (@PageCount < 64)
+							SET @ReasonForNOOP = 'Small table (less then 64KB).'
+						IF (@FragmentationLevel < 10)
+							SET @ReasonForNOOP = 'Low fragmentation (less then 10%).'
 					END
 								
 			    END -- END -- Decide on Index Operation
@@ -729,7 +735,7 @@ BEGIN
 				BEGIN -- START -- Index is disabled just record reason for NOOP
 					SET @ReasonForNOOP = 'Index disabled.'
 					IF (@DebugMode = 1)
-						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Index disabled.'
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index disabled.'
 				END -- END -- Index is disabled just record reason for NOOP
 				
 			    IF (@IndexOperation <> 'NOOP')
@@ -744,12 +750,12 @@ BEGIN
 					-- Calculate the approx time for index operation.  This can be one of three values.
 					--
 					-- Chosing the largest of the three.
-					-- Default Value : Mainteance Window Size / 10.
+					-- Default Value : Maintenance Window Size / 10.
 					-- Previous Operation History : Average
 					-- Object of Similar Size (+/- 15%) : Average
 
 					IF (@DebugMode = 1)
-						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Index Op Selected: ' + @IndexOperation
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Op Selected: ' + @IndexOperation
 
 					DECLARE @PartitionCount INT
 
@@ -763,14 +769,14 @@ BEGIN
 				    SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 				
 					IF (@DebugMode = 1)
-						PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Estimated Operation Completion DateTime ' + CONVERT(VARCHAR(255),@EstOpEndTime,121)
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Estimated Operation Completion DateTime ' + CONVERT(VARCHAR(255),@EstOpEndTime,121)
 
 				    -- Confirm operation will complete before the Maintenance Window End Time.
 				    IF (@EstOpEndTime < @MWEndTime)
 				    BEGIN
 
 						IF (@DebugMode = 1)
-							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Possible to maintain index.'
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Possible to maintain index.'
 				    
 						-- Index is being maintained so we will decrement the MaxSkipCount by 1; minimum value is 0.
 						-- Only adjust if it is actual execution.
@@ -803,7 +809,7 @@ BEGIN
 							BEGIN
 
 								IF (@DebugMode = 1)
-									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+									PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 								IF (@IndexFillFactor = 0)
 								BEGIN
@@ -845,7 +851,7 @@ BEGIN
 								END
 								
 								IF (@DebugMode = 1)
-									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+									PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 								UPDATE dbo.MasterIndexCatalog
 								   SET IndexFillFactor = @IndexFillFactor
@@ -887,10 +893,10 @@ BEGIN
 						ELSE
 						BEGIN
 							IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Starting index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Starting index Maintenance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 							EXEC (@SQL)
 							IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Finished index mainteance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Finished index Maintenance operation. ' + CONVERT(VARCHAR(255),GETDATE(),121)
 						END
 					
 					    SET @OpEndTime = GETDATE()
@@ -927,7 +933,7 @@ BEGIN
 						IF (@PrintOnlyNoExecute = 0)
 						BEGIN
 							IF (@DebugMode =1)
-								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Checking for TLog space'
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Checking for TLog space'
 
 							DECLARE @TLogAutoGrowthSet BIT = 0
 							DECLARE @MaxSet BIT = 0
@@ -961,7 +967,7 @@ BEGIN
 								((@TLogAutoGrowthSet = 1) AND (@MaxSet = 0) AND (@TLogAutoGrowthSet > @MaxLogSpaceUsageBeforeStop)))
 							BEGIN
 								IF (@DebugMode =1)
-									PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'
+									PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Log usage reached maximum.  No more indexes for database [' + @DatabaseName + '].'
 
 								INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
 								SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
@@ -985,10 +991,10 @@ BEGIN
 					    IF (@LastManaged < DATEADD(DAY,-14,GETDATE()))
 					    BEGIN
 
-                            -- If we have not been able to maintain this index due to estimated mainteance cost
+                            -- If we have not been able to maintain this index due to estimated Maintenance cost
 							-- based on statistics analysis above, we should flag this for the dba team.
 							--
-							-- This means this index is too large to maintain for current mainteance windows defined.
+							-- This means this index is too large to maintain for current Maintenance windows defined.
 							-- Team should look at creating a larger window for this index.
 										
 						    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
@@ -1018,7 +1024,7 @@ BEGIN
 					
 					    SET @EstOpEndTime = DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())
 					
-					    -- We have reached the end of mainteance window therefore
+					    -- We have reached the end of Maintenance window therefore
 					    -- we do not want to maintain any additional indexes.
 					    IF (@EstOpEndTime > @MWEndTime)
 						    RETURN
@@ -1039,7 +1045,7 @@ BEGIN
 					BEGIN -- START -- No Operation for current index and it is not disabled
 					
 						IF (@DebugMode = 1)
-							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 						IF (@IndexFillFactor = 0)
 						BEGIN
@@ -1063,7 +1069,7 @@ BEGIN
 							SET @IndexFillFactor = 99
 							
 						IF (@DebugMode = 1)
-							PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
 						UPDATE dbo.MasterIndexCatalog
 						   SET IndexFillFactor = @IndexFillFactor,
@@ -1097,7 +1103,16 @@ BEGIN
             BEGIN -- START -- Either TLog is Full or Skip Count has not reached Max Skip Count or We are out of time!
 
 				IF (@DebugMode = 1)
-					PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Skipping Index - Index Skipped or Mainteance Window Reached or TLog Full'
+				BEGIN
+					IF EXISTS (SELECT * FROM dbo.DatabaseStatus WHERE DatabaseID = @DatabaseID AND IsLogFileFull = 1)
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - TLog Full'
+
+					IF (@SkipCount < @MaxSkipCount)
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - Max Skip Count not reached (' + CAST(@SkipCount AS VARCHAR) + '/' + CAST(@MaxSkipCount AS VARCHAR) + ')'
+
+					IF ((DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Skipping Index - Maintenance Window End Time Reached'
+				END
 
                 -- There is no operation to execute if database TLog is full.  However if 
                 -- skip count has not been reached.  We must increment Skip Count for next time.
@@ -1117,7 +1132,7 @@ BEGIN
 						BEGIN
 
 							IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Increasing skip count.'
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Increasing skip count.'
 
 							UPDATE dbo.MasterIndexCatalog
 							   SET SkipCount = @SkipCount + DATEDIFF(DAY,@LastEvaluated,GetDate()),
@@ -1136,7 +1151,7 @@ BEGIN
                         (DATEADD(MILLISECOND,@FiveMinuteCheck,GETDATE())) > @MWEndTime)
                     BEGIN -- START -- Database T-Log Is Not Full But We Are Out Of Time
 						IF (@DebugMode = 1)
-								PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' ... ... Reached end of mainteance window.'
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Reached end of Maintenance window.'
                         GOTO TheEnd
                     END -- END -- Database T-Log Is Not Full But We Are Out Of Time
                 END
@@ -1154,7 +1169,7 @@ BEGIN
 
 TheEnd:
 IF (@DebugMode = 1)
-	PRINT FORMAT(GETDATE(),'yyyy-mm-dd HH:MM:ss') + ' Finishing index mainteance operation.'
+	PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Finishing index Maintenance operation.'
 
 END
 GO
