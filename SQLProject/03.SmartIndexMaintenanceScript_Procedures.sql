@@ -23,6 +23,7 @@
     2.16.00 Updated how reporting is completed for current activity.
 			Introduced new view to summarize master catalog with last operation details.
 	2.17.00 Updated logic for how mainteance windows are assigned (Issue #21).
+	2.17.01 Can't change fill factor when maintaining individual partition (Issue #22).
 */
 
 USE [SQLSIM]
@@ -875,10 +876,9 @@ BEGIN
 								       ' REBUILD '
 
 							IF (@PartitionCount > 1)
-								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
-
-							SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
-
+								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR) + ' WITH (SORT_IN_TEMPDB = ON,'
+							ELSE
+								SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
 
 						    IF (@RebuildOnline = 1)
 						    BEGIN
