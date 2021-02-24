@@ -103,6 +103,8 @@ A "contributor" is any person that distributes its contribution under this licen
 --	       Introduced new view to summarize master catalog with last operation details.
 -- 2.17.00 Updated logic for how mainteance windows are assigned (Issue #21).
 -- 2.17.01 Fixed Issue #22.
+-- 2.18.00 Rebuild and Reorg Threshold is Dynamically calculated based on index size
+--         (Issue #23).
 --------------------------------------------------------------------------------------
 
 USE [master]

@@ -24,6 +24,7 @@
 			Introduced new view to summarize master catalog with last operation details.
 	2.17.00 Updated logic for how mainteance windows are assigned (Issue #21).
 	2.17.01 Can't change fill factor when maintaining individual partition (Issue #22).
+	2.18.00 Rebuild and Reorg Threshold is Dynamically calculated based on index size (Issue #23).
 */
 
 USE [SQLSIM]
@@ -329,6 +330,8 @@ BEGIN
 	DECLARE @OpTime						int
 	DECLARE @EstOpEndTime				datetime
 	DECLARE @IdentityValue				INT
+	DECLARE @RebuildThreshold			FLOAT = 10
+	DECLARE @ReorgThreshold				FLOAT = 30
 
 	SET NOCOUNT ON
 
@@ -526,9 +529,19 @@ BEGIN
 						   AND IndexID = @IndexID 
 						   AND PartitionNumber = @PartitionNumber
 				
+					SELECT @RebuildThreshold=RebuildThreshold, @ReorgThreshold=ReorgThreshold
+					  FROM dbo.tvfGetThresholds(@PageCount)
+
+					IF (@DebugMode = 1)
+					BEGIN
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Size: ' + FORMAT(@PageCount, '###,###,###,###') + ' Page(s)'
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Fragmentation: ' + FORMAT(@FragmentationLevel, '##0.#0') + '%'
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Rebuild Threshold: ' + FORMAT(@RebuildThreshold, '###.#0') + '% Reorg Threshold: ' + FORMAT(@ReorgThreshold, '###.#0') + '%'
+					END
+
 				    -- If fragmentation level is less then 10 we do not need to look at the index
 				    -- does not matter if it is hot or other.
-				    IF ((@FragmentationLevel >= 10.0) AND (@PageCount > 64))
+				    IF ((@FragmentationLevel >= @ReorgThreshold) AND (@PageCount > 64))
 				    BEGIN
 				
 					    -- Evaluate if the index supports online operations or not.
@@ -606,7 +619,7 @@ BEGIN
 					
 						    -- Either it is a hot index with 64 pages or index has at least 1000
 						    -- pages and the fragmentation needs to be addressed.
-						    IF ((@FragmentationLevel < 30.0) AND (@IndexPageLockAllowed = 1))
+						    IF ((@FragmentationLevel < @RebuildThreshold) AND (@IndexPageLockAllowed = 1))
 						    BEGIN
 						
 							    SET @IndexOperation = 'REORGANIZE'
@@ -615,7 +628,7 @@ BEGIN
 						    ELSE
 						    BEGIN
 							
-							    IF ((@FragmentationLevel < 30.0) AND (@IndexPageLockAllowed = 0))
+							    IF ((@FragmentationLevel < @RebuildThreshold) AND (@IndexPageLockAllowed = 0))
 							    BEGIN
 							
 								    -- Index Organization is not allowed because page lock is not allowed for the index.
@@ -651,7 +664,7 @@ BEGIN
                                         ELSE
                                         BEGIN
                                             SET @IndexOperation = 'NOOP'
-                                            SET @ReasonForNOOP = 'Index does not support index reorganization or offline index rebuild however fragmentation has not reached critical point (30%+) to rebuild.'
+                                            SET @ReasonForNOOP = 'Index does not support index reorganization or offline index rebuild however fragmentation has not reached critical point (' + FORMAT(@RebuildThreshold,'###.#0') + '%+) to rebuild.'
                                         END
 
                                         -- Apr. 25, 2014 - this functionality is being removed.  Systems which do not allow reorganize
@@ -737,8 +750,8 @@ BEGIN
 				    BEGIN
 						IF (@PageCount < 64)
 							SET @ReasonForNOOP = 'Small table (less then 64KB).'
-						IF (@FragmentationLevel < 10)
-							SET @ReasonForNOOP = 'Low fragmentation (less then 10%).'
+						IF (@FragmentationLevel < @ReorgThreshold)
+							SET @ReasonForNOOP = 'Low fragmentation (less then ' + FORMAT(@ReorgThreshold,'###.#0') + '%).'
 					END
 								
 			    END -- END -- Decide on Index Operation
@@ -879,6 +892,7 @@ BEGIN
 								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR) + ' WITH (SORT_IN_TEMPDB = ON,'
 							ELSE
 								SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
+
 
 						    IF (@RebuildOnline = 1)
 						    BEGIN
@@ -1194,4 +1208,3 @@ TheEnd:
 PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Finishing index mainteance operation.'
 
 END
-GO
