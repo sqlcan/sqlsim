@@ -25,6 +25,7 @@
 	2.17.00 Updated logic for how mainteance windows are assigned (Issue #21).
 	2.17.01 Can't change fill factor when maintaining individual partition (Issue #22).
 	2.18.00 Rebuild and Reorg Threshold is Dynamically calculated based on index size (Issue #23).
+	2.19.00 Updated how the Fill Factor Adjustment is calculated (Issue #3).
 */
 
 USE [SQLSIM]
@@ -332,6 +333,7 @@ BEGIN
 	DECLARE @IdentityValue				INT
 	DECLARE @RebuildThreshold			FLOAT = 10
 	DECLARE @ReorgThreshold				FLOAT = 30
+	DECLARE @MIN_FILL_FACTOR_SETTING	INT = 70	-- FIX VALUE -- CONSTANT --
 
 	SET NOCOUNT ON
 
@@ -837,33 +839,20 @@ BEGIN
 
 								IF (@IndexFillFactor = 0)
 								BEGIN
-									SET @IndexFillFactor = 95
+									SET @IndexFillFactor = 99
 									SET @FFA = 0
 								END
 								ELSE
 								BEGIN
-
-									-- Adjust fill factor by 0 to 15%; for each day it didn't get maintained
-									-- it will adjust fill factor by smaller number.
-									--
-									-- e.g. If index was maintained just yesterday; it'll adjust it by 15%
-									--      If index was maintained 8 days ago; it will adjust it by 1%
-									--      If index was maintained 9+ days ago; it will adjust it by 0%
-
-									SET @FFA = ((8-DATEDIFF(DAY,@LastManaged,GETDATE()))*2)+1
-
-									IF (@FFA < 1)
-									   SET @FFA = 0
-
-									IF (@FFA > 15)
-									   SET @FFA = 15
+									SET @FFA = dbo.svfCalculateFillfactor(@LastManaged,@PageCount)									
 								END
 								
+								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
 								SET @IndexFillFactor = @IndexFillFactor - @FFA
 								
-								IF (@IndexFillFactor < 70)
+								IF (@IndexFillFactor < @MIN_FILL_FACTOR_SETTING)
 								BEGIN
-									SET @IndexFillFactor = 70
+									SET @IndexFillFactor = @MIN_FILL_FACTOR_SETTING
 									INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
 									SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
 											'Index fill factor is dropping below 70%.  Please evaluate if the index is using a wide key, which might be causing excessive fragmentation.'
@@ -1086,12 +1075,12 @@ BEGIN
 
 						IF (@IndexFillFactor = 0)
 						BEGIN
-							SET @IndexFillFactor = 95
+							SET @IndexFillFactor = 99
 							SET @FFA = 0
 						END
 						ELSE
 						BEGIN
-							SET @FFA = DATEDIFF(DAY,@LastScanned,Getdate())
+							SET @FFA = dbo.svfCalculateFillfactor(@LastScanned,@PageCount)
 
 							IF (@FFA < 1)
 								SET @FFA = 1
@@ -1099,7 +1088,8 @@ BEGIN
 							IF (@FFA > 5)
 								SET @FFA = 5
 						END
-									
+						
+						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
 						SET @IndexFillFactor = @IndexFillFactor + @FFA
 									
 						IF (@IndexFillFactor > 99)
