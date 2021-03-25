@@ -26,6 +26,9 @@
 	2.17.01 Can't change fill factor when maintaining individual partition (Issue #22).
 	2.18.00 Rebuild and Reorg Threshold is Dynamically calculated based on index size (Issue #23).
 	2.19.00 Updated how the Fill Factor Adjustment is calculated (Issue #3).
+	2.23.00 Added support for Column Store Indexes (Issue #17).
+	        Heavily refactored the code and added support for Index Type.
+			Updated minor logic in the view.
 */
 
 USE [SQLSIM]
@@ -122,8 +125,8 @@ BEGIN
 		BEGIN
 			
 			-- Update Master Index Catalog with meta-data, new objects identified.
-			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexFillFactor, MaintenanceWindowID)
-			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.fill_factor, ' + CAST(@DefaultMaintenanceWindowID AS VARCHAR) + ' 
+			SET @SQL = 'INSERT INTO dbo.MasterIndexCatalog (DatabaseID, DatabaseName, SchemaID, SchemaName, TableID, TableName, PartitionNumber, IndexID, IndexName, IndexType, IndexFillFactor, MaintenanceWindowID)
+			            SELECT ' + CAST(@DatabaseID AS varchar) + ', ''' + @DatabaseName + ''', s.schema_id, s.name, t.object_id, t.name, p.partition_number, i.index_id, i.name, i.type, i.fill_factor, ' + CAST(@DefaultMaintenanceWindowID AS VARCHAR) + ' 
 						  FROM [' + @DatabaseName + '].sys.schemas s
                           JOIN [' + @DatabaseName + '].sys.tables t ON s.schema_id = t.schema_id
                           JOIN [' + @DatabaseName + '].sys.indexes i on t.object_id = i.object_id
@@ -298,7 +301,7 @@ BEGIN
 
     -- Start of Stored Procedure
 	DECLARE @MaintenanceWindowName	    varchar(255)
-	DECLARE @SQL					    varchar(8000)
+	DECLARE @SQL					    nvarchar(4000)
 	DECLARE @DatabaseID				    int
 	DECLARE @DatabaseName			    nvarchar(255)
 	DECLARE @SchemaName				    nvarchar(255)
@@ -307,12 +310,16 @@ BEGIN
 	DECLARE @IndexID				    int
 	DECLARE @PartitionNumber			int
 	DECLARE @IndexName				    nvarchar(255)
+    DECLARE @IsRSI                      bit         -- RSI = Row Store Index
 	DECLARE @IndexFillFactor		    tinyint 
 	DECLARE @IndexOperation			    varchar(25)
 	DECLARE @OfflineOpsAllowed		    bit
 	DECLARE @OnlineOpsSupported		    bit
 	DECLARE @RebuildOnline			    bit
+	DECLARE @IsDisabled				    bit
+	DECLARE @IndexPageLockAllowed	    bit
 	DECLARE @ServerEdition			    int
+    DECLARE @SQLMajorBuild			    int    
 	DECLARE @MWStartTime			    datetime
 	DECLARE @MWEndTime				    datetime
 	DECLARE @OpStartTime			    datetime
@@ -405,7 +412,8 @@ BEGIN
     UPDATE dbo.DatabaseStatus
        SET IsLogFileFull = 0
 
-	SELECT @ServerEdition = CAST(SERVERPROPERTY('EngineEdition') AS int) -- 3 = Enterprise, Developer, Enterprise Eval
+	SELECT @ServerEdition = CAST(SERVERPROPERTY('EngineEdition') AS int),                   -- 3 = Enterprise, Developer, Enterprise Eval
+           @SQLMajorBuild = CAST(SERVERPROPERTY('MajoProductMajorVersionrBuild') AS int)
 
 	DECLARE cuIndexList
 	 CURSOR LOCAL FORWARD_ONLY STATIC READ_ONLY
@@ -442,6 +450,7 @@ BEGIN
 			    SET @RebuildOnline = 1		      --If rebuild is going to execute it should be online.
 
 				-- Update critical settings before maintaing to make sure the indexes are not disabled.
+				--
 			    SET @SQL = 'UPDATE dbo.MasterIndexCatalog
 			                   SET IsDisabled = i.is_disabled,
 			                       IndexPageLockAllowed = i.allow_page_locks
@@ -459,10 +468,9 @@ BEGIN
                                
 			    EXEC (@SQL)
 
-			    DECLARE @IsDisabled				BIT
-			    DECLARE @IndexPageLockAllowed	BIT
-
-			    SELECT @IsDisabled = IsDisabled, @IndexPageLockAllowed = IndexPageLockAllowed
+			    SELECT @IsDisabled = IsDisabled,
+                       @IndexPageLockAllowed = IndexPageLockAllowed,
+                       @IsRSI = CASE WHEN (IndexType IN (5,6)) THEN 0 ELSE 1 END
 			      FROM dbo.MasterIndexCatalog MIC
 			     WHERE MIC.DatabaseID = @DatabaseID
 			       AND MIC.TableID = @TableID
@@ -480,48 +488,85 @@ BEGIN
 					   AND IndexID = @IndexID 
 					   AND PartitionNumber = @PartitionNumber
 			 
-			    IF (@IsDisabled = 0)
+			    IF (@IsDisabled = 0) -- 0 = Enabled, 1 = Disabled.
 			    BEGIN -- START -- Decide on Index Operation
 	
 				    DECLARE @FragmentationLevel float
 				    DECLARE @PageCount			bigint
-				
-					SELECT @OpTime = dbo.svfCalculateOperationCost('FragScan',@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
-					SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 
-					IF ((@EstOpEndTime > @MWEndTime) AND (@PrintOnlyNoExecute = 0))
-						INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-						SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
-						 FROM dbo.MasterIndexCatalog MIC
-						WHERE MIC.DatabaseID = @DatabaseID
-							AND MIC.TableID = @TableID
-							AND MIC.IndexID = @IndexID
-							AND MIC.PartitionNumber = @PartitionNumber
-
-				    SET @OpStartTime = GETDATE()
+                    SET @OpStartTime = GETDATE()
 
                     INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
                     SELECT MIC.ID, 0, 0, 'FragScan', @OpStartTime, '1900-01-01 00:00:00', 'Index fragmentation started.'
-                     FROM dbo.MasterIndexCatalog MIC
+                        FROM dbo.MasterIndexCatalog MIC
                     WHERE MIC.DatabaseID = @DatabaseID
                         AND MIC.TableID = @TableID
                         AND MIC.IndexID = @IndexID
-						AND MIC.PartitionNumber = @PartitionNumber
-				
-					SET @IdentityValue = @@IDENTITY
+                        AND MIC.PartitionNumber = @PartitionNumber
+            
+                    SET @IdentityValue = @@IDENTITY
+                    
+					IF (@IsRSI = 1)
+					BEGIN -- START -- FRAGMENTATION SCAN
 
-				    SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
-				      FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,@PartitionNumber,'LIMITED')
-					 WHERE alloc_unit_type_desc = 'IN_ROW_DATA'
+                        If (@DebugMode = 1)
+                            PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Checking fragmentation for Row Store Index.'
 
-				    SET @OpEndTime = GETDATE()
-				
+						SELECT @OpTime = dbo.svfCalculateOperationCost('FragScan',@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
+						SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
+
+						IF ((@EstOpEndTime > @MWEndTime) AND (@PrintOnlyNoExecute = 0))
+							INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+							SELECT MIC.ID, 0, 0, 'WARNING', GETDATE(), GETDATE(), 'Trigging index fragmentation scan, operation will complete outside mainteance window constraint.'
+							 FROM dbo.MasterIndexCatalog MIC
+							WHERE MIC.DatabaseID = @DatabaseID
+								AND MIC.TableID = @TableID
+								AND MIC.IndexID = @IndexID
+								AND MIC.PartitionNumber = @PartitionNumber
+
+						SELECT @FragmentationLevel = avg_fragmentation_in_percent, @PageCount = page_count
+						  FROM sys.dm_db_index_physical_stats(@DatabaseID,@TableID,@IndexID,@PartitionNumber,'LIMITED')
+						 WHERE alloc_unit_type_desc = 'IN_ROW_DATA'
+
+						SELECT @RebuildThreshold=RebuildThreshold, @ReorgThreshold=ReorgThreshold
+						  FROM dbo.tvfGetThresholds(@PageCount)
+					END
+					ELSE
+					BEGIN
+
+                        If (@DebugMode = 1)
+                            PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Checking fragmentation for Column Store Index.'
+
+						-- Fragmentation for column store indexes is decided by number of deleted rows.  Therefore
+                        -- we will use the DMV to investigate the fragmentation.
+                        --
+                        -- https://docs.microsoft.com/en-us/sql/relational-databases/system-dynamic-management-views/sys-dm-db-column-store-row-group-physical-stats-transact-sql?view=sql-server-ver15
+                        --
+						-- 0 - 20% NO ACTION, 20 - 25% Reorg, 25%+ Rebuild
+
+						SET @RebuildThreshold = 25
+						SET @ReorgThreshold = 20
+						SET @PageCount = 0 -- Page Count for Column Indexes are not used to assess if it should be maintained.
+
+						SET @SQL = 'SELECT @FragmentationOUT = SUM(deleted_rows*100.) / SUM(total_rows) 
+						              FROM ' + @DatabaseName + '.sys.dm_db_column_store_row_group_physical_stats
+						             WHERE object_id = @TableIDIN  AND index_id = @IndexIDIN'
+
+						EXEC sp_executesql @SQL,N'@FragmentationOUT FLOAT OUTPUT, @TableIDIN INT, @IndexIDIN INT ',
+						                   @FragmentationOUT=@FragmentationLevel OUTPUT,
+										   @TableIDIN = @TableID,
+										   @IndexIDIN = @IndexID
+                        
+					END -- END -- FRAGMENTATION SCAN
+
+                    SET @OpEndTime = GETDATE()
+            
                     UPDATE dbo.MaintenanceHistory 
-					   SET OperationEndTime = @OpEndTime,
-					       ErrorDetails = 'Index fragmentation scan completed.',
-						   Fragmentation = @FragmentationLevel,
-						   Page_Count = @PageCount
-					 WHERE HistoryID = @IdentityValue
+                        SET OperationEndTime = @OpEndTime,
+                            ErrorDetails = 'Index fragmentation scan completed.',
+                            Fragmentation = @FragmentationLevel,
+                            Page_Count = @PageCount
+                        WHERE HistoryID = @IdentityValue
 
 					IF (@PrintOnlyNoExecute = 0)
 						UPDATE dbo.MasterIndexCatalog
@@ -531,231 +576,143 @@ BEGIN
 						   AND IndexID = @IndexID 
 						   AND PartitionNumber = @PartitionNumber
 				
-					SELECT @RebuildThreshold=RebuildThreshold, @ReorgThreshold=ReorgThreshold
-					  FROM dbo.tvfGetThresholds(@PageCount)
 
 					IF (@DebugMode = 1)
 					BEGIN
-						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Size: ' + FORMAT(@PageCount, '###,###,###,###') + ' Page(s)'
+						IF (@IsRSI = 1)
+							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Size: ' + FORMAT(@PageCount, '###,###,###,###') + ' Page(s)'
 						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Fragmentation: ' + FORMAT(@FragmentationLevel, '##0.#0') + '%'
 						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Rebuild Threshold: ' + FORMAT(@RebuildThreshold, '###.#0') + '% Reorg Threshold: ' + FORMAT(@ReorgThreshold, '###.#0') + '%'
 					END
 
-				    -- If fragmentation level is less then 10 we do not need to look at the index
-				    -- does not matter if it is hot or other.
-				    IF ((@FragmentationLevel >= @ReorgThreshold) AND (@PageCount > 64))
-				    BEGIN
-				
-					    -- Evaluate if the index supports online operations or not.
+                    IF (@IsRSI = 1)
+                    BEGIN -- RSI -- Decide Index Operation
 
-                        -- Lob Column Types
-                        -- image, ntext, text, binary  Can't do online operations on Clustered Index if there are 
-						-- LOB columns.
-						IF (@IndexID = 1)
+                        IF (@PageCount >= 64)
                         BEGIN
+                            IF ((@FragmentationLevel >= @ReorgThreshold) AND (@FragmentationLevel < @RebuildThreshold))
+                            BEGIN
+                                IF (@IndexPageLockAllowed = 1)
+                                    SET @IndexOperation = 'REORGANIZE'
+                                ELSE
+                                    SET @ReasonForNOOP = 'Index not maintained. (Reorg not possible, Allow Page Locks = Off; Rebuild Threshold not reached.'
+                            END
+                            ELSE IF (@FragmentationLevel >= @RebuildThreshold)
+                            BEGIN
+                                UPDATE MIC
+                                   SET OnlineOpsSupported = 1
+                                  FROM dbo.MasterIndexCatalog MIC
+                                 WHERE MIC.DatabaseID = @DatabaseID
+                                   AND MIC.TableID = @TableID
+                                   AND MIC.IndexID = @IndexID
+                                   AND MIC.PartitionNumber = @PartitionNumber
 
-                            -- A cluster index can only be online if there are no lob column types
-                            -- in underline table definition.
+                                IF (@IndexID = 1)
+                                BEGIN
 
-                            SET @SQL = 'DECLARE @RowsFound int
-                                       
-                                       SELECT @RowsFound = COUNT(*)
-									     FROM [' + @DatabaseName + '].sys.indexes i
-                                         JOIN [' + @DatabaseName + '].sys.tables t
-                                           ON i.object_id = t.object_id
-                                         JOIN [' + @DatabaseName + '].sys.columns c
-                                           ON t.object_id = c.object_id
-							             JOIN [' + @DatabaseName + '].sys.partitions p
-							               ON i.object_id = p.object_id
-						                  AND i.index_id = p.index_id
-                                        WHERE i.index_id = 1
-                                          AND c.system_type_id IN (34,35,99,173)
-                                          AND i.object_id = ' + CAST(@TableID AS varchar) + '
-										  AND p.partition_number = ' + CAST(@PartitionNumber AS VARCHAR) + '
+                                    -- A cluster index can only be online if there are no lob column types
+                                    -- in underline table definition.
 
-								    IF (@RowsFound > 0)
-								    BEGIN
-									
-										-- When updating the Online Supported same rule will apply to all
-										-- partitions.
-									    UPDATE dbo.MasterIndexCatalog
-										   SET OnlineOpsSupported = 0
-										 WHERE DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
-										   AND TableID = ' + CAST(@TableID AS varchar) + '
-										   AND IndexID = ' + CAST(@IndexID AS varchar) + '
-											   
-								    END'
+                                    SET @SQL = 'DECLARE @RowsFound int
+                                            
+                                            SELECT @RowsFound = COUNT(*)
+                                                FROM [' + @DatabaseName + '].sys.indexes i
+                                                JOIN [' + @DatabaseName + '].sys.tables t
+                                                ON i.object_id = t.object_id
+                                                JOIN [' + @DatabaseName + '].sys.columns c
+                                                ON t.object_id = c.object_id
+                                                JOIN [' + @DatabaseName + '].sys.partitions p
+                                                ON i.object_id = p.object_id
+                                                AND i.index_id = p.index_id
+                                                WHERE i.index_id = 1
+                                                AND c.system_type_id IN (34,35,99,173)
+                                                AND i.object_id = ' + CAST(@TableID AS varchar) + '
+
+                                            IF (@RowsFound > 0)
+                                            BEGIN
+                                            
+                                                -- When updating the Online Supported same rule will apply to all
+                                                -- partitions.
+                                                UPDATE dbo.MasterIndexCatalog
+                                                SET OnlineOpsSupported = 0
+                                                WHERE DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
+                                                AND TableID = ' + CAST(@TableID AS varchar) + '
+                                                AND IndexID = 1
+                                                    
+                                            END'
+
+                                    EXEC (@SQL)
+
+                                END
+
+                                SELECT @OnlineOpsSupported = OnlineOpsSupported
+                                  FROM dbo.MasterIndexCatalog MIC
+                                 WHERE MIC.DatabaseID = @DatabaseID
+                                   AND MIC.TableID = @TableID
+                                   AND MIC.IndexID = @IndexID
+                                   AND MIC.PartitionNumber = @PartitionNumber
+
+                                /* Condition Tree Logic - For Rebuild Decision
+                                    Edition & 
+                                    Online Supported     Offline Allowed     Page Lock   Action
+                                    1                    x                   0           Rebuild Online (MAXDOP = 1)
+                                    1                    x                   1           Rebuild Online (MAXDOP = Setting)
+                                    1                    x                   0           Rebuild Online (MAXDOP = 1)
+                                    1                    x                   1           Rebuild Online (MAXDOP = Setting)
+                                    0                    0                   0           Error
+                                    0                    0                   1           Reorgnize
+                                    0                    1                   x           Rebuild Offline (MAXDOP = Setting) -- Assumed
+                                    0                    1                   x           Rebuild Offline (MAXDOP = Setting) -- Assumed
+                                */
+                                SET @RebuildOnline = 0
+                                SET @IndexOperation = 'REBUILD'
+                                IF ((@ServerEdition = 3) AND (@OnlineOpsSupported = 1))
+                                    SET @RebuildOnline = 1
+                                ELSE
+                                BEGIN
+                                    IF ((@IndexPageLockAllowed = 1) AND (@OfflineOpsAllowed = 0))
+                                        SET @IndexOperation = 'REORGANIZE'
+                                    ELSE IF ((@IndexPageLockAllowed = 0) AND (@OfflineOpsAllowed = 0))
+                                    BEGIN
+                                        SET @IndexOperation = 'NOOP'
+                                        SET @ReasonForNOOP = 'Index requires rebuild. However, Allow Offline Operation = Off & Edition <> Enterprise.'
+                                    END
+                                END
+                            END
+                            ELSE
+                                SET @ReasonForNOOP = 'Low fragmentation (less then ' + FORMAT(@ReorgThreshold,'###.#0') + '%).'
                         END
-						ELSE
-						BEGIN
-
-							SET @SQL = ' UPDATE dbo.MasterIndexCatalog
-											SET OnlineOpsSupported = 1
-										   FROM dbo.MasterIndexCatalog MIC
-										   JOIN [' + @DatabaseName + '].sys.indexes i (NOLOCK)
-											 ON MIC.DatabaseID = ' + CAST(@DatabaseID AS varchar) + '
-											AND MIC.TableID = i.object_id 
-											AND MIC.IndexID = i.index_id
-										  WHERE i.object_id = ' + CAST(@TableID AS varchar) + '
-											AND i.index_id = ' + CAST(@IndexID AS varchar) 
-
-						END
-
-					    EXEC (@SQL)
-					
-					    SELECT @OnlineOpsSupported = OnlineOpsSupported
-					      FROM dbo.MasterIndexCatalog MIC
-					     WHERE MIC.DatabaseID = @DatabaseID
-					       AND MIC.TableID = @TableID
-					       AND MIC.IndexID = @IndexID
-						   AND MIC.PartitionNumber = @PartitionNumber
-							
-					    -- Index has some fragmentation and is at least 64 pages.  So we want to evaluate
-					    -- if it should be maintained or not.  If it is HOT Table, it should be
-					    -- maintained; however if it is not HOT Table, then it will only be maintained
-					    -- if it has at least 1000 pages.
-					    IF ((@MaintenanceWindowName = 'PRINTONLY') OR
-						    (@MaintenanceWindowName = 'HOT Tables') OR
-				            ((@MaintenanceWindowName <> 'HOT Tables') AND (@PageCount >= 1000)))
-					    BEGIN
-					
-						    -- Either it is a hot index with 64 pages or index has at least 1000
-						    -- pages and the fragmentation needs to be addressed.
-						    IF ((@FragmentationLevel < @RebuildThreshold) AND (@IndexPageLockAllowed = 1))
-						    BEGIN
-						
-							    SET @IndexOperation = 'REORGANIZE'
-						
-						    END
-						    ELSE
-						    BEGIN
-							
-							    IF ((@FragmentationLevel < @RebuildThreshold) AND (@IndexPageLockAllowed = 0))
-							    BEGIN
-							
-								    -- Index Organization is not allowed because page lock is not allowed for the index.
-								    -- Therefore only option is to rebuild the index, however to rebuild index online
-								    -- online operations must be supported.
-							
-								    IF (((@OnlineOpsSupported = 0) OR (@ServerEdition <> 3)) AND (@OfflineOpsAllowed = 0))
-								    BEGIN
-									    -- Online operation not supported by table or edition.
-									    -- However offline operations are not allowed and table cannot be
-									    -- Reorganized because Page Locks are not allowed.
-									
-									    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-									    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'ERROR', GETDATE(), GETDATE(),
-									           'Failed to maintain index because Online not supported, offline not allowed, and page locks not allowed to do reorganize online.'
-                                          FROM dbo.MasterIndexCatalog MIC
-								         WHERE MIC.DatabaseID = @DatabaseID
-								           AND MIC.TableID = @TableID
-								           AND MIC.IndexID = @IndexID 
-										   AND MIC.PartitionNumber = @PartitionNumber
-								       
-										SET @ReasonForNOOP = 'Error in index maintenance, please reference additional details in history log.'
-										
-								    END
-								    ELSE
-								    BEGIN
-
-									    IF (((@OnlineOpsSupported = 0) OR (@ServerEdition <> 3)) AND (@OfflineOpsAllowed = 1))
-									    BEGIN
-										    SET @IndexOperation = 'REBUILD'
-										    SET @RebuildOnline = 0
-									    END
-                                        ELSE
-                                        BEGIN
-                                            SET @IndexOperation = 'NOOP'
-                                            SET @ReasonForNOOP = 'Index does not support index reorganization or offline index rebuild however fragmentation has not reached critical point (' + FORMAT(@RebuildThreshold,'###.#0') + '%+) to rebuild.'
-                                        END
-
-                                        -- Apr. 25, 2014 - this functionality is being removed.  Systems which do not allow reorganize
-                                        --                 can be rebuild to manage fragmentation, however we do not want to manage
-                                        --                 the fragmentation at a low value.  Having low fragmentation
-                                        --                 this functionality was still triggering a rebuild.  Which is costly
-                                        --                 operation for large indexes. Replaced with code above, i.e.
-                                        --                 Index Operation = NOOP.
-
-                                        /*
-									    ELSE
-									    BEGIN
-									
-										    IF ((@OnlineOpsSupported = 1) AND (@ServerEdition = 3) AND (@OfflineOpsAllowed = 0))
-										    BEGIN
-											    SET @IndexOperation = 'REBUILD'
-											    SET @RebuildOnline = 1
-										    END
-										
-									    END
-                                        */
-								
-								    END
-								
-							    END
-							    ELSE
-							    BEGIN
-							
-								    -- If script came to this phase; then it must mean the fragmentation is
-								    -- higher then 30%.  Therefore index must be rebuilt.
-								       
-								    IF ((@OnlineOpsSupported = 1) AND (@ServerEdition = 3))
-								    BEGIN
-									    SET @IndexOperation = 'REBUILD'
-									    SET @RebuildOnline = 1
-								    END
-								    ELSE
-								    BEGIN
-									    -- Online operations are not supported by the table or edition.
-									
-									    IF (@OfflineOpsAllowed = 1)
-									    BEGIN
-										    SET @IndexOperation = 'REBUILD'
-										    SET @RebuildOnline = 0
-									    END
-									    ELSE
-									    BEGIN
-									
-										    IF (@IndexPageLockAllowed = 1)
-										    BEGIN
-											    SET @IndexOperation = 'REORGANIZE'
-										    END
-										    ELSE
-										    BEGIN
-											    INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-											    SELECT MIC.ID, @PageCount, @FragmentationLevel, 'ERROR', GETDATE(), GETDATE(),
-												       'Failed to maintain index because Online not supported, offline not allowed, and page locks not allowed to do reorganize online.'
-											      FROM dbo.MasterIndexCatalog MIC
-											     WHERE MIC.DatabaseID = @DatabaseID
-											       AND MIC.TableID = @TableID
-											       AND MIC.IndexID = @IndexID 
-												   AND MIC.PartitionNumber = @PartitionNumber
-											       
-												SET @ReasonForNOOP = 'Error in index maintenance, please reference additional details in history log.'
-										    END
-										
-									    END
-									
-								    END
-								
-							    END
-							
-						    END
-
-					    END
-					    ELSE
-					    BEGIN
-							SET @ReasonForNOOP = 'Small table (> 64KB), but not part of [HOT Tables] maintenance window.'
-						END 
-
-				    END
-				    ELSE
-				    BEGIN
-						IF (@PageCount < 64)
-							SET @ReasonForNOOP = 'Small table (less then 64KB).'
-						IF (@FragmentationLevel < @ReorgThreshold)
-							SET @ReasonForNOOP = 'Low fragmentation (less then ' + FORMAT(@ReorgThreshold,'###.#0') + '%).'
-					END
-								
+                        ELSE
+                            SET @ReasonForNOOP = 'Small table (less then 64KB).'
+                    END
+                    ELSE
+                    BEGIN -- CSI -- Decide Index Operation
+                        UPDATE MIC
+                            SET OnlineOpsSupported = 0
+                            FROM dbo.MasterIndexCatalog MIC
+                            WHERE MIC.DatabaseID = @DatabaseID
+                            AND MIC.TableID = @TableID
+                            AND MIC.IndexID = @IndexID
+                            AND MIC.PartitionNumber = @PartitionNumber
+                        SET @OnlineOpsSupported = 0
+                        IF ((@FragmentationLevel >= @ReorgThreshold) AND (@FragmentationLevel < @RebuildThreshold))                        
+                            SET @IndexOperation = 'REORGANIZE'
+                        ELSE IF (@FragmentationLevel >= @RebuildThreshold)
+                        BEGIN
+                            SET @ReasonForNOOP = 'Incomplete SOlution.'
+                            IF ((@OfflineOpsAllowed = 1) AND (@SQLMajorBuild <= 14))
+                            BEGIN
+                                SET @IndexOperation = 'REBUILD'
+                                SET @RebuildOnline = 0
+                            END
+                            ELSE IF ((@OfflineOpsAllowed = 0) AND (@SQLMajorBuild <= 14))
+                                SET @ReasonForNOOP = 'Index requires rebuild.  However column-store indexes in SQL 2014 and older cannot be maintained online and Allow Offline Operation = Off'
+                            ELSE
+                                -- SQL Server 2019, recommended approach is to maintain the index using REORG vs REBUILD.
+                                -- https://techcommunity.microsoft.com/t5/sql-server/columnstore-index-defragmentation-using-reorganize-command/ba-p/384653
+                                SET @IndexOperation = 'REORGANIZE'
+                        END
+                    END								
 			    END -- END -- Decide on Index Operation
 				ELSE
 				BEGIN -- START -- Index is disabled just record reason for NOOP
@@ -773,13 +730,6 @@ BEGIN
 				    DECLARE @IndexReorgTime		int
 				    DECLARE @IndexRebuildTime	int
 				 
-					-- Calculate the approx time for index operation.  This can be one of three values.
-					--
-					-- Chosing the largest of the three.
-					-- Default Value : Mainteance Window Size / 10.
-					-- Previous Operation History : Average
-					-- Object of Similar Size (+/- 15%) : Average
-
 					IF (@DebugMode = 1)
 						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Index Op Selected: ' + @IndexOperation
 
@@ -791,6 +741,12 @@ BEGIN
 					   AND MIC.TableID = @TableID
 					   AND MIC.IndexID = @IndexID
 
+					-- Calculate the approx time for index operation.  This can be one of three values.
+					--
+					-- Chosing the largest of the three.
+					-- Default Value : Mainteance Window Size / 10.
+					-- Previous Operation History : Average
+					-- Object of Similar Size (+/- 15%) : Average
 					SELECT @OpTime = dbo.svfCalculateOperationCost(@IndexOperation,@DatabaseID,@TableID,@IndexID,@PartitionNumber,@PageCount,@DefaultOpTime)	
 				    SET @EstOpEndTime = DATEADD(MILLISECOND,@OpTime,GETDATE())
 				
@@ -820,84 +776,105 @@ BEGIN
 					    SET @SQL = 'USE [' + @DatabaseName + ']; '
 						SET @SQL = @SQL + 'ALTER INDEX [' + @IndexName + '] '
 						SET @SQL = @SQL + 'ON [' + @SchemaName + '].[' + @TableName + '] '
-					            
-					    IF (@IndexOperation = 'REORGANIZE')
-					    BEGIN
-						    SET @SQL = @SQL + 
-								       ' REORGANIZE'
-							IF (@PartitionCount > 1)
-								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
-					    END
-					    ELSE
-					    BEGIN
-
-							IF (@PrintOnlyNoExecute = 0)
-							BEGIN
-
-								IF (@DebugMode = 1)
-									PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
-
-								IF (@IndexFillFactor = 0)
-								BEGIN
-									SET @IndexFillFactor = 99
-									SET @FFA = 0
-								END
-								ELSE
-								BEGIN
-									SET @FFA = dbo.svfCalculateFillfactor(@LastManaged,@PageCount)									
-								END
-								
-								PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
-								SET @IndexFillFactor = @IndexFillFactor - @FFA
-								
-								IF (@IndexFillFactor < @MIN_FILL_FACTOR_SETTING)
-								BEGIN
-									SET @IndexFillFactor = @MIN_FILL_FACTOR_SETTING
-									INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
-									SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
-											'Index fill factor is dropping below 70%.  Please evaluate if the index is using a wide key, which might be causing excessive fragmentation.'
-										FROM dbo.MasterIndexCatalog MIC
-										WHERE MIC.DatabaseID = @DatabaseID
-										AND MIC.TableID = @TableID
-										AND MIC.IndexID = @IndexID 
-										AND MIC.PartitionNumber = @PartitionNumber
-								END
-								
-								IF (@DebugMode = 1)
-									PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
-
-								UPDATE dbo.MasterIndexCatalog
-								   SET IndexFillFactor = @IndexFillFactor
-								 WHERE DatabaseID = @DatabaseID
-								   AND TableID = @TableID
-								   AND IndexID = @IndexID 
-								   AND PartitionNumber = @PartitionNumber
-							END
-
-						    SET @SQL = @SQL + 
-								       ' REBUILD '
-
-							IF (@PartitionCount > 1)
-								SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR) + ' WITH (SORT_IN_TEMPDB = ON,'
-							ELSE
-								SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
-
-
-						    IF (@RebuildOnline = 1)
-						    BEGIN
-							    SET @SQL = @SQL + 
-                                       ' MAXDOP = ' + CASE WHEN @IndexPageLockAllowed = 0 THEN '1' ELSE CAST(@MAXDOP AS VARCHAR) END + ', ' +
-								       ' ONLINE = ON'
-						    END
+					    
+                        IF (@IsRSI = 1)
+                        BEGIN
+                            IF (@IndexOperation = 'REORGANIZE')
+                            BEGIN
+                                SET @SQL = @SQL + 
+                                        ' REORGANIZE'
+                                IF (@PartitionCount > 1)
+                                    SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
+                            END
                             ELSE
                             BEGIN
-							    SET @SQL = @SQL + 
-                                       ' MAXDOP = ' + CAST(@MAXDOP AS VARCHAR)
-                            END
 
-						    SET @SQL = @SQL + ');'
-					
-					    END
+                                IF (@PrintOnlyNoExecute = 0)
+                                BEGIN
+
+                                    IF (@DebugMode = 1)
+                                        PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+
+                                    IF (@IndexFillFactor = 0)
+                                    BEGIN
+                                        SET @IndexFillFactor = 99
+                                        SET @FFA = 0
+                                    END
+                                    ELSE
+                                    BEGIN
+                                        SET @FFA = dbo.svfCalculateFillfactor(@LastManaged,@PageCount)									
+                                    END
+                                    
+                                    PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
+                                    SET @IndexFillFactor = @IndexFillFactor - @FFA
+                                    
+                                    IF (@IndexFillFactor < @MIN_FILL_FACTOR_SETTING)
+                                    BEGIN
+                                        SET @IndexFillFactor = @MIN_FILL_FACTOR_SETTING
+                                        INSERT INTO dbo.MaintenanceHistory (MasterIndexCatalogID, Page_Count, Fragmentation, OperationType, OperationStartTime, OperationEndTime, ErrorDetails)
+                                        SELECT MIC.ID, @PageCount, @FragmentationLevel, 'WARNING', GETDATE(), GETDATE(),
+                                                'Index fill factor is dropping below 70%.  Please evaluate if the index is using a wide key, which might be causing excessive fragmentation.'
+                                            FROM dbo.MasterIndexCatalog MIC
+                                            WHERE MIC.DatabaseID = @DatabaseID
+                                            AND MIC.TableID = @TableID
+                                            AND MIC.IndexID = @IndexID 
+                                            AND MIC.PartitionNumber = @PartitionNumber
+                                    END
+                                    
+                                    IF (@DebugMode = 1)
+                                        PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+
+                                    UPDATE dbo.MasterIndexCatalog
+                                    SET IndexFillFactor = @IndexFillFactor
+                                    WHERE DatabaseID = @DatabaseID
+                                    AND TableID = @TableID
+                                    AND IndexID = @IndexID 
+                                    AND PartitionNumber = @PartitionNumber
+                                END
+
+                                SET @SQL = @SQL + 
+                                        ' REBUILD '
+
+                                IF (@PartitionCount > 1)
+                                    SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR) + ' WITH (SORT_IN_TEMPDB = ON,'
+                                ELSE
+                                    SET @SQL = @SQL + ' WITH (FILLFACTOR = ' + CAST(@IndexFillFactor AS VARCHAR) + ', SORT_IN_TEMPDB = ON,'
+
+
+                                IF (@RebuildOnline = 1)
+                                BEGIN
+                                    SET @SQL = @SQL + 
+                                        ' MAXDOP = ' + CASE WHEN @IndexPageLockAllowed = 0 THEN '1' ELSE CAST(@MAXDOP AS VARCHAR) END + ', ' +
+                                        ' ONLINE = ON'
+                                END
+                                ELSE
+                                BEGIN
+                                    SET @SQL = @SQL + 
+                                        ' MAXDOP = ' + CAST(@MAXDOP AS VARCHAR)
+                                END
+
+                                SET @SQL = @SQL + ');'
+                        
+                            END
+                        END
+                        ELSE
+                        BEGIN
+                            IF (@IndexOperation = 'REORGANIZE')
+                            BEGIN
+                                SET @SQL = @SQL + 
+                                        ' REORGANIZE '
+                                IF (@PartitionCount > 1)
+                                    SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
+                                SET @SQL += ' WITH (COMPRESS_ALL_ROW_GROUPS=ON);'
+                            END
+                            ELSE 
+                            BEGIN
+                                SET @SQL += ' REBUILD'
+                                IF (@PartitionCount > 1)
+                                    SET @SQL = @SQL + ' PARTITION=' + CAST(@PartitionNumber AS VARCHAR)
+                                SET @SQL += ' WITH (MAXDOP = ' + CAST(@MAXDOP AS VARCHAR) + ');'
+                            END
+                        END
 					
 					    SET @OpStartTime = GETDATE()
 
@@ -1073,30 +1050,35 @@ BEGIN
 						IF (@DebugMode = 1)
 							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  Before adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
 
-						IF (@IndexFillFactor = 0)
-						BEGIN
-							SET @IndexFillFactor = 99
-							SET @FFA = 0
-						END
-						ELSE
-						BEGIN
-							SET @FFA = dbo.svfCalculateFillfactor(@LastScanned,@PageCount)
+                        IF (@IsRSI = 1)
+                        BEGIN
+                            IF (@IndexFillFactor = 0)
+                            BEGIN
+                                SET @IndexFillFactor = 99
+                                SET @FFA = 0
+                            END
+                            ELSE
+                            BEGIN
+                                SET @FFA = dbo.svfCalculateFillfactor(@LastScanned,@PageCount)
 
-							IF (@FFA < 1)
-								SET @FFA = 1
+                                IF (@FFA < 1)
+                                    SET @FFA = 1
 
-							IF (@FFA > 5)
-								SET @FFA = 5
-						END
-						
-						PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
-						SET @IndexFillFactor = @IndexFillFactor + @FFA
-									
-						IF (@IndexFillFactor > 99)
-							SET @IndexFillFactor = 99
-							
-						IF (@DebugMode = 1)
-							PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+                                IF (@FFA > 5)
+                                    SET @FFA = 5
+                            END
+                            
+                            PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... ... Adjustment Recommended: ' + CAST(@FFA AS VARCHAR)
+                            SET @IndexFillFactor = @IndexFillFactor + @FFA
+                                        
+                            IF (@IndexFillFactor > 99)
+                                SET @IndexFillFactor = 99
+                                
+                            IF (@DebugMode = 1)
+                                PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' ... ... Adjusting Fill Factor.  After adjustment: ' + CAST(@IndexFillFactor AS VARCHAR)
+                            END
+                        ELSE
+                            SET @IndexFillFactor = 0
 
 						UPDATE dbo.MasterIndexCatalog
 						   SET IndexFillFactor = @IndexFillFactor,
@@ -1198,3 +1180,4 @@ TheEnd:
 PRINT FORMAT(GETDATE(),'yyyy-MM-dd HH:mm:ss') + ' Finishing index mainteance operation.'
 
 END
+GO

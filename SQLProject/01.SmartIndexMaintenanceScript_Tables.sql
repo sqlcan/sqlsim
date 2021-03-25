@@ -66,9 +66,9 @@ A "contributor" is any person that distributes its contribution under this licen
 -- Developed by: Mohit K. Gupta
 --               mogupta@microsoft.com
 --
--- Last Updated: Feb. 23, 2021
+-- Last Updated: Mar. 25, 2021
 --
--- Version: 2.19.00
+-- Version: 2.23.00
 --
 -- 2.00.00 Updated for Partitions and SQL 2019.
 -- 2.01.00 Resolved Issue #1.
@@ -106,6 +106,9 @@ A "contributor" is any person that distributes its contribution under this licen
 -- 2.18.00 Rebuild and Reorg Threshold is Dynamically calculated based on index size
 --         (Issue #23).
 -- 2.19.00 Updated how the Fill Factor Adjustment is calculated (Issue #3).
+-- 2.23.00 Added support for Column Store Indexes (Issue #17).
+--         Heavily refactored the code and added support for Index Type.
+-- 		   Updated minor logic in the view.
 --------------------------------------------------------------------------------------
 
 USE [master]
@@ -190,6 +193,8 @@ BEGIN
 		TableName				 nvarchar(255)		NOT NULL,
 		IndexID					 int				NOT NULL,
 		IndexName				 nvarchar(255)		NOT NULL,
+		IndexType				 int				NOT NULL,
+			CONSTRAINT dfIndexType					DEFAULT(0),
 		PartitionNumber			 int				NOT NULL,
 		IndexFillFactor			 tinyint 			NULL
 			CONSTRAINT dfIndexFillFactor			DEFAULT(95),

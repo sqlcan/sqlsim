@@ -1,15 +1,17 @@
-Last Updated: Dec. 16, 2020
+Last Updated: Mar. 25, 2021
 
 New Install:
 * Run 01.SmartIndexMaintenanceScript_Tables.sql
-* Run 01.SmartIndexMaintenanceScript_TableUpdates_V2.03.00.sql
-* Run 02.SmartIndexMaintenanceScript_Functions.sql
-* Run 03.SmartIndexMaintenanceScript_Procedures.sql
-* Run 04.SmartIndexMaintenanceScript_Views.sql
+* Run 02.SmartIndexMaintenanceScript_Triggers.sql
+* Run 03.SmartIndexMaintenanceScript_Functions.sql
+* Run 04.SmartIndexMaintenanceScript_Procedures.sql
+* Run 05.SmartIndexMaintenanceScript_Views.sql
 
 Existing Install Version 2.00.00 or older:
 * Run 01.SmartIndexMaintenanceScript_TableUpdates_V2.02.02.sql
-* Run 01.SmartIndexMaintenanceScript_TableUpdates_V2.03.00.sql
-* Run 02.SmartIndexMaintenanceScript_Functions.sql
-* Run 03.SmartIndexMaintenanceScript_Procedures.sql
-* Run 04.SmartIndexMaintenanceScript_Views.sql
+* Run 01.SmartIndexMaintenanceScript_TableUpdates_V2.23.00.sql
+* Run 02.SmartIndexMaintenanceScript_Triggers.sql
+* Run 03.SmartIndexMaintenanceScript_Functions.sql
+* Run 04.SmartIndexMaintenanceScript_Procedures.sql
+* Run 05.SmartIndexMaintenanceScript_Views.sql
+* Run SmartIndexMaintenanceScript_UpdateMetaData_V2.23.00.sql
